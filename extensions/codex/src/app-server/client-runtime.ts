@@ -635,6 +635,19 @@ export function isCodexAppServerLiveThreadClaimed(
   return runtime !== undefined && !runtime.closed && runtime.claimedThreads.has(threadId);
 }
 
+/** Completed foreground work may leave cleanup custody with native background work. */
+export function isCodexAppServerLiveThreadBackgroundOnly(
+  client: CodexAppServerClient,
+  threadId: string,
+): boolean {
+  const runtime = configuredClients.get(client);
+  if (!runtime || runtime.closed || !runtime.protectedThreads.has(threadId)) {
+    return false;
+  }
+  const claim = runtime.claimedThreads.get(threadId);
+  return !claim || claim.releaseAfterProtection !== undefined;
+}
+
 /** Native commands and children can still need an otherwise-idle subscription. */
 export function isCodexAppServerLiveThreadProtected(
   client: CodexAppServerClient,
