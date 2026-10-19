@@ -457,6 +457,24 @@ describe.skipIf(process.platform === "win32")("native Codex warm cleanup", () =>
         expect(bindingStore.read(sessionBinding.sessionBindingIdentity(params))).toEqual(saved);
         pluginFingerprint = "original-policy";
       }
+      if (contextRefresh) {
+        const beforePolicyChange = requests.length;
+        await expect(
+          startOrResumeThread({
+            ...common,
+            developerInstructions: "Changed persistent thread policy",
+          }),
+        ).rejects.toThrow("claimed by active work; stop it first");
+        expect(bindingStore.read(sessionBinding.sessionBindingIdentity(params))).toEqual(saved);
+        expect(
+          requests
+            .slice(beforePolicyChange)
+            .some(({ method }) =>
+              ["thread/start", "thread/unsubscribe", "turn/start"].includes(method),
+            ),
+        ).toBe(false);
+        record("persistent-policy-refresh-refused", { threadId: first.threadId });
+      }
       const resumed = await startOrResumeThread(common);
       if (contextRefresh) {
         expect(resumed.threadId).not.toBe(first.threadId);
