@@ -56,7 +56,8 @@ it.each([
     const failure = await assertOpenClawDatabasesReady({
       env,
       operation: "doctor",
-      config: {},
+      config: { agents: { entries: {} } },
+      configuredAgentDatabaseTargets: [],
     }).catch((cause: unknown) => cause);
     expect(failure).toBeInstanceOf(Error);
     expect(failure).toMatchObject({
