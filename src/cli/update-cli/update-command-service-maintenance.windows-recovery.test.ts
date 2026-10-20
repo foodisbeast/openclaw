@@ -20,7 +20,7 @@ import * as windowsRecovery from "./update-command-windows-task.js";
 const { mocks, withServiceHome } =
   await import("./update-command-service-maintenance.test-support.js");
 
-it.each(["ERROR: Access is denied.", "HRESULT 0x80070005"])(
+it.each(["ERROR: Access is denied.", "ERROR: Toegang geweigerd.", "HRESULT 0x80070005"])(
   "reports elevation guidance without restoring a denied task disable: %s",
   (detail) =>
     withServiceHome(async (home) => {
