@@ -1,5 +1,6 @@
 import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CrabboxEnvironment } from "./crabbox-tool-results.js";
 import { createCrabboxTool } from "./crabbox-tool.js";
 
 const context: OpenClawPluginToolContext = {
@@ -71,14 +72,21 @@ describe("Crabbox conversation tool", () => {
     tool = instance.tool!;
     request = instance.request;
   });
+  const execute = (action: string, params: Record<string, unknown> = {}) =>
+    tool.execute(action, { action, ...params });
+  async function reply(action: string, response: unknown, text: string) {
+    request.mockResolvedValueOnce(response);
+    const result = await execute(action);
+    expectText(result, text);
+    expect(result.details).toBe(response);
+  }
 
   it("explains an empty attachment without turning it into an error", async () => {
-    const result = await tool!.execute("status", { action: "status" });
-    expectText(
-      result,
+    await reply(
+      "status",
+      { attachment: null },
       "No Crabbox is attached to this conversation. Use action=create to create one.",
     );
-    expect(result.details).toEqual({ attachment: null });
   });
 
   it("lists usable profile choices while retaining machine catalog metadata", async () => {
@@ -89,7 +97,7 @@ describe("Crabbox conversation tool", () => {
       operatingSystems: [{ id: "linux" }, { id: "macos", disabledReason: "No host available" }],
     };
     request.mockResolvedValueOnce({ profiles: [profile, { id: "other", providerId: "other" }] });
-    const result = await tool!.execute("profiles", { action: "profiles" });
+    const result = await execute("profiles");
     expect(result.content[0]).toMatchObject({
       text: expect.stringContaining(
         "- desktop: desktop enabled; linux; macos (unavailable: No host available); small (linux)",
@@ -97,82 +105,61 @@ describe("Crabbox conversation tool", () => {
     });
     expect(result.details).toEqual({ profiles: [{ ...profile, desktop: true }] });
     request.mockResolvedValueOnce({ profiles: [] });
-    expectText(
-      await tool.execute("profiles", { action: "profiles" }),
-      "No Crabbox profiles are currently available.",
-    );
+    expectText(await execute("profiles"), "No Crabbox profiles are currently available.");
   });
 
-  it.each([
-    {
-      response: { stopped: true },
-      text: "No Crabbox is attached to this conversation. Nothing to stop.",
-    },
-    {
-      response: {
-        stopped: true,
-        environment: { ...environment, status: "stopping", worker: { state: "destroying" } },
-      },
-      text: "Crabbox environment-one is detached from this conversation.\nEnvironment: stopping (destroying).",
-    },
-    {
-      response: {
-        stopped: true,
-        environment: {
-          ...environment,
-          status: "error",
-          worker: { state: "destroying", error: "Cleanup will retry" },
-        },
-      },
-      text: "Crabbox environment-one is detached from this conversation.\nEnvironment: error (destroying).\nCleanup will retry",
-    },
-  ])(
-    "does not claim lease release before confirmed cleanup ($text)",
-    async ({ response, text }) => {
-      request.mockResolvedValueOnce(response);
-      const result = await tool!.execute("stop", { action: "stop" });
-      expectText(result, text);
-      expect(result.details).toBe(response);
-    },
-  );
+  it.each<[string | undefined, string | undefined, string]>([
+    [undefined, undefined, "No Crabbox is attached to this conversation. Nothing to stop."],
+    [
+      "stopping",
+      undefined,
+      "Crabbox environment-one is detached from this conversation.\nEnvironment: stopping (destroying).",
+    ],
+    [
+      "error",
+      "Cleanup will retry",
+      "Crabbox environment-one is detached from this conversation.\nEnvironment: error (destroying).\nCleanup will retry",
+    ],
+  ])("does not claim lease release before confirmed cleanup (%s)", async (status, error, text) => {
+    const stopped: CrabboxEnvironment | undefined = status
+      ? { ...environment, status, worker: { state: "destroying", ...(error ? { error } : {}) } }
+      : undefined;
+    await reply("stop", { stopped: true, ...(stopped ? { environment: stopped } : {}) }, text);
+  });
 
   it.each([false, true])("distinguishes a new attachment from reuse (%s)", async (reused) => {
     const response = { attachment, environment, reused };
-    request.mockResolvedValueOnce({ attachment: null }).mockResolvedValueOnce(response);
-    const result = await tool!.execute("create", { action: "create" });
-    expectText(
-      result,
+    request.mockResolvedValueOnce({ attachment: null });
+    await reply(
+      "create",
+      response,
       (reused ? "Reusing" : "Created") +
         " Crabbox environment-one.\nEnvironment: available (ready).",
     );
-    expect(result.details).toBe(response);
   });
 
   it.each([
-    {
-      closed: false,
-      state: "bootstrapping",
-      status: "starting",
-      summary: "Crabbox environment-one is attached to this conversation.",
-    },
-    {
-      closed: true,
-      state: "destroyed",
-      status: "unavailable",
-      summary: "Crabbox environment-one is no longer attached. Use action=create to create one.",
-    },
-  ])(
-    "reports attachment and machine state independently ($state)",
-    async ({ closed, state, status, summary }) => {
+    [
+      false,
+      "bootstrapping",
+      "starting",
+      "Crabbox environment-one is attached to this conversation.",
+    ],
+    [
+      true,
+      "destroyed",
+      "unavailable",
+      "Crabbox environment-one is no longer attached. Use action=create to create one.",
+    ],
+  ] as const)(
+    "reports attachment and machine state independently (%s/%s)",
+    async (closed, state, status, summary) => {
       const response = {
         attachment,
         closed,
         environment: { ...environment, status, worker: { ...environment.worker, state } },
       };
-      request.mockResolvedValueOnce(response);
-      const result = await tool!.execute("status", { action: "status" });
-      expectText(result, summary + "\nEnvironment: " + status + " (" + state + ").");
-      expect(result.details).toBe(response);
+      await reply("status", response, summary + "\nEnvironment: " + status + " (" + state + ").");
     },
   );
 
@@ -189,21 +176,23 @@ describe("Crabbox conversation tool", () => {
       outputLimitExceeded: true,
     };
     request.mockResolvedValueOnce(response);
-    const result = await tool!.execute("run", { action: "exec", argv: ["example"] });
-    const content = result.content[0];
-    if (content?.type !== "text") {
-      throw new Error("Expected readable feedback");
-    }
-    expect(content.text).toContain(outcome.code === 0 ? "Command completed" : "Command failed");
-    expect(content.text).toContain("exit code: " + outcome.code);
-    expect(content.text).toContain("termination: " + outcome.termination);
-    expect(content.text).toContain("signal: " + outcome.signal);
-    expect(content.text).toContain("killed: " + outcome.killed);
-    expect(content.text).toContain("stdout:\n  output\n");
-    expect(content.text).toContain("stderr:\nwarning\n");
-    expect(content.text).toContain("stdout truncated: 12 bytes");
-    expect(content.text).toContain("stderr truncated: 3 bytes");
-    expect(content.text).toContain("Output limit exceeded");
+    const result = await execute("exec", { argv: ["example"] });
+    expectText(
+      result,
+      `${outcome.code === 0 ? "Command completed." : "Command failed."}
+exit code: ${outcome.code}; termination: ${outcome.termination}; signal: ${outcome.signal}; killed: ${outcome.killed}
+Environment: environment-one; workspace: /workspace
+stdout truncated: 12 bytes
+stderr truncated: 3 bytes
+Output limit exceeded.
+
+stdout:
+  output
+
+stderr:
+warning
+`,
+    );
     expect(result.details).toBe(response);
   });
 
@@ -217,20 +206,19 @@ describe("Crabbox conversation tool", () => {
     async ({ action, state, code }) => {
       const response = { ...commandResult, code, process: { processId: "app-one", state } };
       request.mockResolvedValueOnce(response);
-      const result = await tool!.execute("process", {
-        action,
+      const result = await execute(action, {
         argv: ["server"],
         background: true,
         processId: "app-one",
       });
       expect(result.content[0]).toMatchObject({
-        text: expect.stringContaining("Process app-one: " + state + "."),
+        text: expect.stringContaining(
+          "Process app-one: " +
+            state +
+            "." +
+            (state === "running" ? " App readiness has not been checked." : ""),
+        ),
       });
-      if (state === "running") {
-        expect(result.content[0]).toMatchObject({
-          text: expect.stringContaining("App readiness has not been checked."),
-        });
-      }
       expect(result.details).toBe(response);
     },
   );
@@ -353,20 +341,15 @@ describe("Crabbox conversation tool", () => {
 
   it("preserves remote command argument and standard-input bytes", async () => {
     const argv = ["node", "-e", "process.stdout.write(process.argv[1])", "  padded\n"];
-    await tool!.execute("call-one", {
-      action: "exec",
+    const params = {
       environmentId: "environment-one",
       argv,
       input: "\n payload \n",
-    });
+    };
+    await execute("exec", params);
     expect(request).toHaveBeenCalledWith(
       "environments.session.exec",
-      {
-        action: "run",
-        environmentId: "environment-one",
-        argv,
-        input: "\n payload \n",
-      },
+      { action: "run", ...params },
       expect.anything(),
     );
   });
