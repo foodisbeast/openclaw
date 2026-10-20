@@ -7,6 +7,17 @@ import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { focusChatComposerFromPrintableKeydown } from "../chat-pane-shared.ts";
 import { ChatPermissionPicker, type ChatPermissionPickerProps } from "./chat-permission-picker.tsx";
 
+function key(target: EventTarget, value: string) {
+  target.dispatchEvent(
+    new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true }),
+  );
+}
+
+const option = (container: HTMLElement, mode: string) =>
+  container.querySelector<HTMLElement>(`[data-chat-permission-option="${mode}"]`);
+const menuOpen = (menu: HTMLElement) =>
+  waitForSolid(() => expect(menu.matches(":popover-open")).toBe(true));
+
 it("keeps locked modes unavailable and selects enabled numeric shortcuts with return focus", async () => {
   const onSelect = vi.fn();
   const canSelectFull = vi.fn(() => false);
@@ -24,15 +35,13 @@ it("keeps locked modes unavailable and selects enabled numeric shortcuts with re
   trigger.focus();
   trigger.dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true, cancelable: true }));
   const menu = container.querySelector<HTMLElement>('[role="menu"]')!;
-  await waitForSolid(() => expect(menu.matches(":popover-open")).toBe(true));
+  await menuOpen(menu);
   expect(document.activeElement).toBe(trigger);
-  expect(
-    container.querySelector('[data-chat-permission-option="full"]')?.matches(":disabled"),
-  ).toBe(true);
-  menu.dispatchEvent(new KeyboardEvent("keydown", { key: "5", bubbles: true, cancelable: true }));
+  expect(option(container, "full")?.matches(":disabled")).toBe(true);
+  key(menu, "5");
   expect(onSelect).not.toHaveBeenCalled();
   expect(menu.matches(":popover-open")).toBe(true);
-  menu.dispatchEvent(new KeyboardEvent("keydown", { key: "4", bubbles: true, cancelable: true }));
+  key(menu, "4");
   expect(onSelect).toHaveBeenCalledExactlyOnceWith("workspace");
   expect(document.activeElement).toBe(trigger);
 });
@@ -44,9 +53,7 @@ it("includes the documentation link in keyboard menu navigation", async () => {
   flush();
   const trigger = container.querySelector<HTMLButtonElement>("[data-chat-permission-select]")!;
   trigger.focus();
-  trigger.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
-  );
+  key(trigger, "ArrowDown");
   await waitForSolid(() =>
     expect(container.querySelector(".chat-controls__permission-learn-more")).not.toBeNull(),
   );
@@ -54,17 +61,9 @@ it("includes the documentation link in keyboard menu navigation", async () => {
   await waitForSolid(() => expect(document.activeElement).toBe(link));
   expect(link.getAttribute("href")).toBe("https://docs.openclaw.ai/gateway/permission-modes");
   expect(link.target).toBe("_blank");
-  link.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
-  );
-  await waitForSolid(() =>
-    expect(document.activeElement).toBe(
-      container.querySelector('[data-chat-permission-option="default"]'),
-    ),
-  );
-  document.activeElement?.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }),
-  );
+  key(link, "ArrowDown");
+  await waitForSolid(() => expect(document.activeElement).toBe(option(container, "default")));
+  key(document.activeElement!, "Home");
   await waitForSolid(() => expect(document.activeElement).toBe(link));
 });
 
@@ -88,19 +87,15 @@ it("keeps declared shortcuts in the menu and forwards ordinary typing to the com
   const menu = container.querySelector<HTMLElement>('[role="menu"]')!;
   container.querySelector("textarea")!.focus();
   trigger.dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true, cancelable: true }));
-  await waitForSolid(() => expect(menu.matches(":popover-open")).toBe(true));
+  await menuOpen(menu);
   expect(document.activeElement).toBe(trigger);
-  trigger.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "4", bubbles: true, cancelable: true }),
-  );
+  key(trigger, "4");
   expect(onSelect).toHaveBeenCalledExactlyOnceWith("workspace");
   expect(document.activeElement).toBe(trigger);
   trigger.click();
-  await waitForSolid(() => expect(menu.matches(":popover-open")).toBe(true));
-  document.activeElement?.dispatchEvent(
-    new KeyboardEvent("keydown", { key: "q", bubbles: true, cancelable: true }),
-  );
-  expect(document.activeElement).toBe(container.querySelector("textarea"));
+  await menuOpen(menu);
+  key(document.activeElement!, "q");
+  expect(document.activeElement).toBe(composer);
   expect(onSelect).toHaveBeenCalledTimes(1);
 });
 
@@ -113,7 +108,7 @@ it("preserves option content on unrelated refreshes while admitting permission c
   await waitForSolid(() =>
     expect(container.querySelector('[role="menu"]')?.matches(":popover-open")).toBe(true),
   );
-  const row = container.querySelector<HTMLElement>('[data-chat-permission-option="default"]')!;
+  const row = option(container, "default")!;
   const content = row.querySelector(".chat-controls__permission-option-copy");
   const icon = row.querySelector(".chat-controls__permission-option-icon");
   const observer = new MutationObserver(() => {});
@@ -132,14 +127,8 @@ it("preserves option content on unrelated refreshes while admitting permission c
   options.canSelectFull = true;
   setProps({ ...options });
   flush();
-  expect(container.querySelector('[data-chat-permission-option="default"]')).toBe(row);
+  expect(option(container, "default")).toBe(row);
   expect(row.textContent).toContain("Default (Guarded)");
-  expect(
-    container
-      .querySelector('[data-chat-permission-option="workspace"]')
-      ?.getAttribute("aria-checked"),
-  ).toBe("true");
-  expect(
-    container.querySelector('[data-chat-permission-option="full"]')?.matches(":disabled"),
-  ).toBe(false);
+  expect(option(container, "workspace")?.getAttribute("aria-checked")).toBe("true");
+  expect(option(container, "full")?.matches(":disabled")).toBe(false);
 });

@@ -4,38 +4,34 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   chatPaneHeaderSessionRow as row,
   mountChatPaneHeader,
-  type ChatPaneHeaderProps,
 } from "./chat-pane-header.test-support.ts";
 
 const containers: HTMLElement[] = [];
 
-afterEach(() => {
-  containers.splice(0).forEach((container) => container.remove());
-});
+afterEach(() => containers.splice(0).forEach((container) => container.remove()));
 
-function mountHeader(patch: Partial<ChatPaneHeaderProps> = {}) {
-  return mountChatPaneHeader(containers, patch);
-}
+const owner = {
+  actor: {
+    type: "human",
+    id: "ada",
+    identity: { type: "profile", id: "ada" },
+    label: "Ada King",
+  },
+} satisfies NonNullable<ReturnType<typeof row>["owner"]>;
+const participant = (id: string, label: string) => ({
+  identity: { type: "profile" as const, id },
+  label,
+});
 
 describe("chat pane header identity links", () => {
   it("links the owner chip and each participant face to their activity feed", async () => {
     const navigate = vi.fn();
-    const { container } = mountHeader({
+    const { container } = mountChatPaneHeader(containers, {
       showOwnerChip: true,
       personActivity: { basePath: "", navigate },
       session: row({
-        owner: {
-          actor: {
-            type: "human",
-            id: "ada",
-            identity: { type: "profile", id: "ada" },
-            label: "Ada King",
-          },
-        },
-        participants: [
-          { identity: { type: "profile", id: "mira" }, label: "Mira" },
-          { identity: { type: "profile", id: "riley" }, label: "Riley" },
-        ],
+        owner,
+        participants: [participant("mira", "Mira"), participant("riley", "Riley")],
         participantCount: 2,
       }),
     });
@@ -65,7 +61,9 @@ describe("chat pane header identity links", () => {
   it("retains the rename control and focus while header facts and callbacks update", () => {
     const previousRename = vi.fn();
     const currentRename = vi.fn();
-    const { container, update } = mountHeader({ onBeginRename: previousRename });
+    const { container, update } = mountChatPaneHeader(containers, {
+      onBeginRename: previousRename,
+    });
     const button = container.querySelector<HTMLButtonElement>(".chat-pane__session-title-button")!;
     const title = button.querySelector(".chat-pane__session-title-text");
     button.focus();
@@ -80,18 +78,11 @@ describe("chat pane header identity links", () => {
   });
 
   it("leaves identities unlinked when the header has no activity routing", () => {
-    const { container } = mountHeader({
+    const { container } = mountChatPaneHeader(containers, {
       showOwnerChip: true,
       session: row({
-        owner: {
-          actor: {
-            type: "human",
-            id: "ada",
-            identity: { type: "profile", id: "ada" },
-            label: "Ada King",
-          },
-        },
-        participants: [{ identity: { type: "profile", id: "mira" }, label: "Mira" }],
+        owner,
+        participants: [participant("mira", "Mira")],
         participantCount: 1,
       }),
     });

@@ -1,58 +1,40 @@
 /* @vitest-environment jsdom */
 
 import { createComponent } from "solid-js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GatewaySessionRow } from "../../../api/types.ts";
-import type { ApplicationPlacementStartupStatus } from "../../../app/session-placement-startup.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { ChatPanePlacement } from "./chat-pane-placement.tsx";
 
-const containers: HTMLElement[] = [];
+type Props = Parameters<typeof ChatPanePlacement>[0];
+const timestamps = {
+  generation: 2,
+  createdAtMs: 100_000,
+  updatedAtMs: 300_000,
+  stateChangedAtMs: 300_000,
+};
+const activePlacement = {
+  ...timestamps,
+  state: "active",
+  environmentId: "worker:device",
+  activeOwnerEpoch: 1,
+  workerBundleHash: "a".repeat(64),
+  workspaceBaseManifestRef: "base-manifest",
+  remoteWorkspaceDir: "/worker/repo",
+} satisfies GatewaySessionRow["placement"];
 
-afterEach(() => {
-  containers.splice(0).forEach((container) => container.remove());
-});
-
-function mount(
-  status: "available" | "offline" | undefined,
-  placementStartupStatus?: Pick<ApplicationPlacementStartupStatus, "phase" | "targetKind">,
-): HTMLElement {
-  const container = document.createElement("div");
-  document.body.append(container);
-  containers.push(container);
-  const session: GatewaySessionRow = {
-    key: "agent:main:device",
-    kind: "direct",
-    updatedAt: 0,
-    placement: {
-      state: "active",
-      generation: 1,
-      createdAtMs: 100_000,
-      updatedAtMs: 300_000,
-      stateChangedAtMs: 300_000,
-      environmentId: "worker:device",
-      activeOwnerEpoch: 1,
-      workerBundleHash: "a".repeat(64),
-      workspaceBaseManifestRef: "base-manifest",
-      remoteWorkspaceDir: "/worker/repo",
-      runner: status ? { kind: "device", status } : undefined,
-    },
-  };
-  mountSolid(
-    () =>
-      createComponent(ChatPanePlacement, {
-        session,
-        placementStartupStatus,
-        placementReclaimDisabledReason:
-          status === "offline"
-            ? "Reconnect the device to stop and sync its workspace, or Continue on Gateway."
-            : undefined,
-      }),
-    { container },
-  );
-  return container;
+function mount(session: Partial<GatewaySessionRow>, props: Omit<Props, "session"> = {}) {
+  return mountSolid(() =>
+    createComponent(ChatPanePlacement, {
+      session: { key: "agent:main:test", kind: "direct", updatedAt: 0, ...session },
+      ...props,
+    }),
+  ).container;
 }
+
+const text = (container: HTMLElement, part: string) =>
+  container.querySelector(`.chat-pane__placement-${part}`)?.textContent?.trim();
 
 async function openPlacement(container: HTMLElement) {
   const panel = container.querySelector<HTMLElement>('.chat-pane__placement-menu > [role="menu"]')!;
@@ -65,16 +47,10 @@ describe("chat pane device placement", () => {
   it.each(["profile", "device"] as const)(
     "presents post-turn workspace sync for %s without cloud-only wording",
     async (target) => {
-      const container = document.createElement("div");
-      document.body.append(container);
-      containers.push(container);
-      const session = {
-        key: "agent:main:cloud-sync",
-        kind: "direct",
-        updatedAt: 0,
+      const container = mount({
         agentRuntime: { id: "openclaw", source: "model" as const },
         placement: {
-          state: "active",
+          ...activePlacement,
           workspaceResultReconciling: true,
           ...(target === "device"
             ? {
@@ -88,27 +64,12 @@ describe("chat pane device placement", () => {
                 },
               }
             : {}),
-          generation: 2,
-          createdAtMs: 100_000,
-          updatedAtMs: 300_000,
-          stateChangedAtMs: 300_000,
           environmentId: "worker:cloud",
-          activeOwnerEpoch: 1,
-          workerBundleHash: "a".repeat(64),
-          workspaceBaseManifestRef: "base-manifest",
-          remoteWorkspaceDir: "/worker/repo",
         },
-      } satisfies GatewaySessionRow;
-
-      mountSolid(() => createComponent(ChatPanePlacement, { session }), { container });
-
-      expect(container.querySelector(".chat-pane__placement-chip")?.textContent?.trim()).toBe(
-        "Worker · syncing files",
-      );
+      });
+      expect(text(container, "chip")).toBe("Worker · syncing files");
       await openPlacement(container);
-      expect(container.querySelector(".chat-pane__placement-note")?.textContent).toContain(
-        "Finalizing worker workspace",
-      );
+      expect(text(container, "note")).toContain("Finalizing worker workspace");
       expect(container.querySelector("openclaw-elapsed-time")).toBeNull();
       if (target === "device") {
         expect(container.textContent).toContain("Inference");
@@ -151,18 +112,24 @@ describe("chat pane device placement", () => {
   ])(
     "renders $status active ownership ahead of $phase $targetKind startup intent",
     async (scenario) => {
-      const container = mount(scenario.status, {
-        phase: scenario.phase,
-        targetKind: scenario.targetKind,
-      });
-
-      expect(container.querySelector(".chat-pane__placement-chip")?.textContent?.trim()).toBe(
-        scenario.label,
+      const container = mount(
+        {
+          placement: {
+            ...activePlacement,
+            runner: scenario.status ? { kind: "device", status: scenario.status } : undefined,
+          },
+        },
+        {
+          placementStartupStatus: { phase: scenario.phase, targetKind: scenario.targetKind },
+          placementReclaimDisabledReason:
+            scenario.status === "offline"
+              ? "Reconnect the device to stop and sync its workspace, or Continue on Gateway."
+              : undefined,
+        },
       );
+      expect(text(container, "chip")).toBe(scenario.label);
       await openPlacement(container);
-      expect(container.querySelector(".chat-pane__placement-move")?.textContent?.trim()).toBe(
-        scenario.move,
-      );
+      expect(text(container, "move")).toBe(scenario.move);
       const note = container.querySelector(".chat-pane__placement-note");
       const move = container.querySelector<HTMLElement>(".chat-pane__placement-move");
       const reclaim = container.querySelector<HTMLElement>(".chat-pane__placement-reclaim");
@@ -182,35 +149,25 @@ describe("chat pane device placement", () => {
   it.each(["local", undefined] as const)(
     "offers worker dispatch for a repository-only session with %s placement",
     async (placementState) => {
-      const container = document.createElement("div");
-      document.body.append(container);
-      containers.push(container);
       const onPlacementRecover = vi.fn();
-      const session: GatewaySessionRow = {
-        key: "agent:main:repository",
-        kind: "direct",
-        updatedAt: 0,
-        repositoryWorkspaceId: "repository-workspace-1",
-        ...(placementState
-          ? {
-              placement: {
-                state: placementState,
-                generation: 1,
-                createdAtMs: 1,
-                updatedAtMs: 1,
-                stateChangedAtMs: 1,
-              },
-            }
-          : {}),
-      };
-
-      mountSolid(() => createComponent(ChatPanePlacement, { session, onPlacementRecover }), {
-        container,
-      });
-
-      expect(container.querySelector(".chat-pane__placement-chip")?.textContent?.trim()).toBe(
-        "Worker required",
+      const container = mount(
+        {
+          repositoryWorkspaceId: "repository-workspace-1",
+          ...(placementState
+            ? {
+                placement: {
+                  state: placementState,
+                  generation: 1,
+                  createdAtMs: 1,
+                  updatedAtMs: 1,
+                  stateChangedAtMs: 1,
+                },
+              }
+            : {}),
+        },
+        { onPlacementRecover },
       );
+      expect(text(container, "chip")).toBe("Worker required");
       await openPlacement(container);
       const dispatch = container.querySelector<HTMLButtonElement>(".chat-pane__placement-recovery");
       expect(container.querySelectorAll(".chat-pane__placement-recovery")).toHaveLength(1);
@@ -222,58 +179,30 @@ describe("chat pane device placement", () => {
   );
 
   it("offers restart without a redundant stop action after a failed worker is gone", async () => {
-    const container = document.createElement("div");
-    document.body.append(container);
-    containers.push(container);
-    const session: GatewaySessionRow = {
-      key: "agent:main:failed-worker",
-      kind: "direct",
-      updatedAt: 0,
+    const container = mount({
       placement: {
+        ...timestamps,
         state: "failed",
-        generation: 2,
-        createdAtMs: 100_000,
-        updatedAtMs: 300_000,
-        stateChangedAtMs: 300_000,
         recoveryError: "worker disappeared",
         recoveryAction: "restart",
       },
-    };
-
-    mountSolid(() => createComponent(ChatPanePlacement, { session }), { container });
-
+    });
     await openPlacement(container);
-    expect(container.querySelector(".chat-pane__placement-recovery")?.textContent?.trim()).toBe(
-      "Restart session…",
-    );
+    expect(text(container, "recovery")).toBe("Restart session…");
     expect(container.querySelector(".chat-pane__placement-reclaim")).toBeNull();
   });
 
   it("requires stop before restart while the failed worker environment may remain", async () => {
-    const container = document.createElement("div");
-    document.body.append(container);
-    containers.push(container);
-    const session: GatewaySessionRow = {
-      key: "agent:main:failed-worker",
-      kind: "direct",
-      updatedAt: 0,
+    const container = mount({
       placement: {
+        ...timestamps,
         state: "failed",
-        generation: 2,
-        createdAtMs: 100_000,
-        updatedAtMs: 300_000,
-        stateChangedAtMs: 300_000,
         recoveryError: "worker disappeared",
         recoveryAction: "stop-first",
       },
-    };
-
-    mountSolid(() => createComponent(ChatPanePlacement, { session }), { container });
-
+    });
     await openPlacement(container);
     expect(container.querySelector(".chat-pane__placement-recovery")).toBeNull();
-    expect(container.querySelector(".chat-pane__placement-reclaim")?.textContent?.trim()).toBe(
-      "Stop worker…",
-    );
+    expect(text(container, "reclaim")).toBe("Stop worker…");
   });
 });

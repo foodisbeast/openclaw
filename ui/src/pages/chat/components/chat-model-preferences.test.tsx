@@ -61,29 +61,19 @@ async function controls(overrides: Partial<Props>) {
     setCurrent({ ...current(), ...next });
     flush();
   };
+  const control = <T extends HTMLElement>(name: string) =>
+    expectDefined(container.querySelector<T>(`[data-chat-${name}]`), name);
   return {
     container,
     update,
     onModelSelect,
     onThinkingSelect,
     onFastModeSelect,
-    model: expectDefined(container.querySelector<HTMLElement>("[data-chat-model-select]"), "model"),
-    option: expectDefined(
-      container.querySelector<HTMLButtonElement>('[data-chat-model-option="example/other"]'),
-      "model option",
-    ),
-    effort: expectDefined(
-      container.querySelector<HTMLElement>("[data-chat-thinking-select]"),
-      "effort",
-    ),
-    slider: expectDefined(
-      container.querySelector<HTMLInputElement>("[data-chat-thinking-slider]"),
-      "slider",
-    ),
-    speed: expectDefined(
-      container.querySelector<HTMLButtonElement>("[data-chat-speed-option=on]"),
-      "speed",
-    ),
+    model: control("model-select"),
+    option: control<HTMLButtonElement>('model-option="example/other"'),
+    effort: control("thinking-select"),
+    slider: control<HTMLInputElement>("thinking-slider"),
+    speed: control<HTMLButtonElement>("speed-option=on"),
   };
 }
 
@@ -92,27 +82,19 @@ it.each([
   { name: "preparing", activeRunId: "active-run" },
   { name: "streaming", stream: "A reply in progress" },
 ])("edits model, reasoning, and speed preferences while $name", async (busy) => {
-  const {
-    model,
-    option,
-    effort,
-    slider,
-    speed,
-    onModelSelect,
-    onThinkingSelect,
-    onFastModeSelect,
-  } = await controls(busy);
+  const view = await controls(busy);
+  const { model, option, effort, slider, speed } = view;
   expect(model.getAttribute("aria-disabled")).toBe("false");
   expect(effort.getAttribute("aria-disabled")).toBe("false");
   option.click();
-  expect(onModelSelect).toHaveBeenCalledWith("example/other", "main", undefined);
+  expect(view.onModelSelect).toHaveBeenCalledWith("example/other", "main", undefined);
   expect(slider.disabled).toBe(false);
   slider.value = "0";
   slider.dispatchEvent(new Event("change", { bubbles: true }));
-  expect(onThinkingSelect).toHaveBeenCalledWith("low", "main");
+  expect(view.onThinkingSelect).toHaveBeenCalledWith("low", "main");
   expect(speed.disabled).toBe(false);
   speed.click();
-  expect(onFastModeSelect).toHaveBeenCalledWith("on", "main");
+  expect(view.onFastModeSelect).toHaveBeenCalledWith("on", "main");
 });
 
 it.each([
@@ -152,13 +134,11 @@ it("retires and restores an unavailable context-window control with its access g
     contextWindowTarget,
     contextWindowMutationDisabledReason: "Admin only",
   });
-  expect(
-    view.container.querySelector<HTMLButtonElement>("[data-chat-context-window-toggle]")?.disabled,
-  ).toBe(true);
+  const toggle = () =>
+    view.container.querySelector<HTMLButtonElement>("[data-chat-context-window-toggle]");
+  expect(toggle()?.disabled).toBe(true);
   view.update({ contextWindowTarget: { contextWindows: [] } });
-  expect(view.container.querySelector("[data-chat-context-window-toggle]")).toBeNull();
+  expect(toggle()).toBeNull();
   view.update({ contextWindowTarget });
-  expect(
-    view.container.querySelector<HTMLButtonElement>("[data-chat-context-window-toggle]")?.disabled,
-  ).toBe(true);
+  expect(toggle()?.disabled).toBe(true);
 });

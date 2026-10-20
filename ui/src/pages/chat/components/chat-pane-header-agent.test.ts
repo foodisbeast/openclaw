@@ -12,6 +12,18 @@ import {
 const containers: HTMLElement[] = [];
 afterEach(() => containers.splice(0).forEach((container) => container.remove()));
 
+function researchHeader(patch: Parameters<typeof mountChatPaneHeader>[1] = {}) {
+  return mountChatPaneHeader(containers, {
+    agent: { id: "research", name: "Research lead", textAvatar: "🔬" },
+    ...patch,
+  });
+}
+
+const find = (container: Element, selector: string) =>
+  container.querySelector<HTMLElement>(selector);
+const dialogOpen = (container: Element, open: boolean) =>
+  waitForSolid(() => expect(find(container, "[role=dialog]")?.matches(":popover-open")).toBe(open));
+
 function fixture() {
   const request = vi.fn(async () => ({}));
   const { pane, state } = createTestChatPane({
@@ -50,19 +62,14 @@ function fixture() {
 
 describe("agent-first chat header", () => {
   it("keeps workspace actions, parent navigation, and session renaming in secondary context", async () => {
-    const { container, props, update } = mountChatPaneHeader(containers, {
-      agent: { id: "research", name: "Research lead", textAvatar: "🔬" },
+    const { container, props, update } = researchHeader({
       parentSession: { key: "agent:research:parent", title: "Parent conversation" },
     });
-    const trigger = container.querySelector<HTMLButtonElement>(
-      ".chat-pane__agent-identity > button",
-    )!;
+    const trigger = find(container, ".chat-pane__agent-identity > button")!;
     expect(trigger.getAttribute("aria-label")).toBe("Session and workspace for Research lead");
     expect(container.querySelector(".chat-pane__crumbs")).toBeNull();
     trigger.click();
-    await waitForSolid(() =>
-      expect(container.querySelector("[role=dialog]")?.matches(":popover-open")).toBe(true),
-    );
+    await dialogOpen(container, true);
     const dialog = container.querySelector("[role=dialog]")!;
     expect(dialog.textContent).toContain("Session title");
     expect(dialog.textContent).toContain("openclaw");
@@ -83,34 +90,22 @@ describe("agent-first chat header", () => {
   });
 
   it("opens secondary context for overflow-menu rename and retires it on agent changes", async () => {
-    const { container, update } = mountChatPaneHeader(containers, {
-      agent: { id: "research", name: "Research lead", textAvatar: "🔬" },
-    });
+    const { container, update } = researchHeader();
     update({ editing: true });
-    await waitForSolid(() =>
-      expect(container.querySelector("[role=dialog]")?.matches(":popover-open")).toBe(true),
-    );
+    await dialogOpen(container, true);
     expect(container.querySelector(".chat-pane__session-title-input")).not.toBeNull();
     update({ editing: false, agent: { id: "main", name: "Chief of Staff", textAvatar: "🦊" } });
-    await waitForSolid(() =>
-      expect(container.querySelector("[role=dialog]")?.matches(":popover-open")).toBe(false),
-    );
+    await dialogOpen(container, false);
     expect(container.querySelector(".chat-pane__crumbs")).toBeNull();
     expect(container.querySelector(".chat-pane__agent-name")?.textContent).toBe("Chief of Staff");
-    container.querySelector<HTMLButtonElement>(".chat-pane__agent-identity > button")!.click();
-    await waitForSolid(() =>
-      expect(container.querySelector("[role=dialog]")?.matches(":popover-open")).toBe(true),
-    );
+    find(container, ".chat-pane__agent-identity > button")!.click();
+    await dialogOpen(container, true);
     update({ presented: false });
-    await waitForSolid(() =>
-      expect(container.querySelector("[role=dialog]")?.matches(":popover-open")).toBe(false),
-    );
+    await dialogOpen(container, false);
   });
 
   it("opens the current agent settings from a separate header control", () => {
-    const { container, props } = mountChatPaneHeader(containers, {
-      agent: { id: "research", name: "Research lead", textAvatar: "🔬" },
-    });
+    const { container, props } = researchHeader();
     const settings = container.querySelector<HTMLButtonElement>(".chat-pane__agent-settings")!;
     expect(settings.getAttribute("aria-label")).toBe("Research lead settings");
     settings.click();
@@ -163,12 +158,8 @@ describe("agent-first chat header", () => {
     state.assistantName = "Wrong agent";
     pane.context.agents.state.agentsList = null;
     draw();
-    expect(container.querySelector(".chat-pane__agent-identity")?.textContent).toContain(
-      "research",
-    );
-    expect(container.querySelector(".chat-pane__header-leading")?.textContent).not.toContain(
-      "Wrong agent",
-    );
+    expect(find(container, ".chat-pane__agent-identity")?.textContent).toContain("research");
+    expect(find(container, ".chat-pane__header-leading")?.textContent).not.toContain("Wrong agent");
 
     pane.context.agents.state.agentsList = {
       defaultId: "main",
@@ -177,12 +168,8 @@ describe("agent-first chat header", () => {
       agents: [{ id: "main", name: "Wrong agent" }],
     };
     draw();
-    expect(container.querySelector(".chat-pane__agent-identity")?.textContent).toContain(
-      "research",
-    );
-    expect(container.querySelector(".chat-pane__header-leading")?.textContent).not.toContain(
-      "Wrong agent",
-    );
+    expect(find(container, ".chat-pane__agent-identity")?.textContent).toContain("research");
+    expect(find(container, ".chat-pane__header-leading")?.textContent).not.toContain("Wrong agent");
   });
 
   it("updates a hydrated avatar and name without restoring a removed image", async () => {
