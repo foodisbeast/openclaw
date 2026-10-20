@@ -8,6 +8,7 @@ import { waitForPluginCacheRetirement } from "../plugins/plugin-cache.js";
 import { resolvePluginSourceCaptureFallbackPrefix } from "../plugins/plugin-source-capture-path.js";
 import "../test-utils/prepare-compiled-subprocesses.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
+import { immutableDescriptor } from "./package-update-activation-fixtures.test-support.js";
 import { resolvePrivateSqliteSnapshotStagingRoot } from "./sqlite-private-directory.js";
 import {
   formatImmutableUpdateCoverage,
@@ -65,42 +66,44 @@ function fixture() {
   clearPluginDoctorContractRegistryCache();
   const root = fs.realpathSync(dirs.make("immutable-inspection-"));
   const stateDir = path.join(root, "state");
-  const configPath = path.join(stateDir, "openclaw.json");
-  const shared = path.join(stateDir, "state", "openclaw.sqlite");
-  const main = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
-  const external = path.join(root, "external", "openclaw-agent.sqlite");
-  const retained = path.join(root, "retained", "openclaw-agent.sqlite");
-  const absentConfigured = path.join(root, "absent-configured", "openclaw-agent.sqlite");
-  const absentRegistered = path.join(root, "absent-registered", "openclaw-agent.sqlite");
+  const files = {
+    configPath: path.join(stateDir, "openclaw.json"),
+    shared: path.join(stateDir, "state", "openclaw.sqlite"),
+    main: path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite"),
+    external: path.join(root, "external", "openclaw-agent.sqlite"),
+    retained: path.join(root, "retained", "openclaw-agent.sqlite"),
+    absentConfigured: path.join(root, "absent-configured", "openclaw-agent.sqlite"),
+    absentRegistered: path.join(root, "absent-registered", "openclaw-agent.sqlite"),
+    resource: path.join(root, "plugin-data", "preserved.txt"),
+    missingResource: path.join(root, "plugin-data", "missing.txt"),
+    currentPath: path.join(root, "releases", currentSha),
+    candidatePath: path.join(root, "releases", preparedSha),
+  };
   const pluginRoot = path.join(root, "plugin");
-  const resource = path.join(root, "plugin-data", "preserved.txt");
-  const missingResource = path.join(root, "plugin-data", "missing.txt");
-  const currentPath = path.join(root, "releases", currentSha);
-  const candidatePath = path.join(root, "releases", preparedSha);
   const env = {
     HOME: root,
     OPENCLAW_HOME: root,
     OPENCLAW_STATE_DIR: stateDir,
-    OPENCLAW_CONFIG_PATH: configPath,
+    OPENCLAW_CONFIG_PATH: files.configPath,
     OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
     XDG_CACHE_HOME: path.join(root, "cache"),
   };
   for (const [key, value] of Object.entries(env)) {
     vi.stubEnv(key, value);
   }
-  for (const file of [main, external, retained]) {
+  for (const file of [files.main, files.external, files.retained]) {
     database(file, 24).close();
   }
-  const registry = database(shared, 1);
+  const registry = database(files.shared, 1);
   registry.exec("CREATE TABLE agent_databases(agent_id TEXT, path TEXT);");
   const insert = registry.prepare("INSERT INTO agent_databases VALUES (?, ?)");
-  const relativeMain = path.relative(stateDir, main);
-  insert.run("main", main);
+  const relativeMain = path.relative(stateDir, files.main);
+  insert.run("main", files.main);
   insert.run("main", relativeMain);
-  insert.run("retained", retained);
-  insert.run("missing", absentRegistered);
+  insert.run("retained", files.retained);
+  insert.run("missing", files.absentRegistered);
   registry.close();
-  write(resource, "plugin-owned synthetic content");
+  write(files.resource, "plugin-owned synthetic content");
   writeJson(path.join(pluginRoot, "openclaw.plugin.json"), {
     id: "inspection-fixture",
     configSchema: {},
@@ -112,20 +115,20 @@ function fixture() {
     `module.exports = { stateMigrations: [{
       id: "private-state", label: "Private state",
       collectBackupResources: () => [
-        { path: ${JSON.stringify(resource)}, kind: "file" },
-        { path: ${JSON.stringify(missingResource)}, kind: "file" },
+        { path: ${JSON.stringify(files.resource)}, kind: "file" },
+        { path: ${JSON.stringify(files.missingResource)}, kind: "file" },
       ],
       detectLegacyState() { throw new Error("must not detect during inspection"); },
       migrateLegacyState() { throw new Error("must not migrate during inspection"); },
     }] };\n`,
   );
-  writeJson(configPath, {
+  writeJson(files.configPath, {
     agents: {
       ownership: "explicit",
       entries: {
         main: {},
-        external: { agentDir: path.dirname(external) },
-        absent: { agentDir: path.dirname(absentConfigured) },
+        external: { agentDir: path.dirname(files.external) },
+        absent: { agentDir: path.dirname(files.absentConfigured) },
       },
     },
     plugins: {
@@ -135,8 +138,8 @@ function fixture() {
     },
   });
   for (const [generationPath, agent] of [
-    [currentPath, 24],
-    [candidatePath, 25],
+    [files.currentPath, 24],
+    [files.candidatePath, 25],
   ] as const) {
     writeJson(path.join(generationPath, "package.json"), {
       name: "openclaw",
@@ -150,33 +153,26 @@ function fixture() {
   const record: ImmutableInstallRecord = {
     revision: 1,
     descriptor: {
+      ...immutableDescriptor(
+        root,
+        currentSha,
+        "1".repeat(64),
+        {
+          unit: "synthetic-gateway.service",
+          scope: "system",
+          account: "synthetic",
+          stateDir,
+          configPath: files.configPath,
+          profile: null,
+        },
+        "1:4",
+      ),
       version: 2,
       activationEnabled: true,
-      kind: "immutable",
-      root,
-      rootIdentity: "1:1",
-      releasesIdentity: "1:2",
-      current: {
-        sha: currentSha,
-        path: currentPath,
-        identity: "1:3",
-        pointerIdentity: "1:4",
-        buildDigest: "1".repeat(64),
-      },
-      service: {
-        unit: "synthetic-gateway.service",
-        scope: "system",
-        account: "synthetic",
-        stateDir,
-        configPath,
-        profile: null,
-      },
-      runtime: { path: process.execPath, identity: "synthetic-runtime" },
-      source: "https://github.com/openclaw/openclaw.git",
     },
     prepared: {
       sha: preparedSha,
-      path: candidatePath,
+      path: files.candidatePath,
       identity: "1:3",
       buildDigest: "2".repeat(64),
       preparedAtMs: 1,
@@ -185,25 +181,13 @@ function fixture() {
   };
   mocks.readRecord.mockResolvedValue(record);
   mocks.readService.mockResolvedValue({ command: { environment: env } });
-  const scratch = resolvePrivateSqliteSnapshotStagingRoot(env);
-  const capturePrefix = resolvePluginSourceCaptureFallbackPrefix(stateDir);
   return {
+    ...files,
     root,
     stateDir,
-    configPath,
-    shared,
-    main,
     relativeMain,
-    external,
-    retained,
-    absentConfigured,
-    absentRegistered,
-    resource,
-    missingResource,
-    candidatePath,
-    currentPath,
-    scratch,
-    capturePrefix,
+    scratch: resolvePrivateSqliteSnapshotStagingRoot(env),
+    capturePrefix: resolvePluginSourceCaptureFallbackPrefix(stateDir),
   };
 }
 

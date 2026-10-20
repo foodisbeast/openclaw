@@ -128,39 +128,34 @@ export function savedReportArtifactPath(
   return path.join(parsed.dir, `${parsed.name}.${artifactKey}${parsed.ext}`);
 }
 
-export function mockCreatedIssue(url: string) {
-  return vi.fn(async (_issue: PreparedGithubIssue, hooks: GithubIssueSubmitHooks) => {
-    await hooks.afterAuthPreflight?.();
-    const commitIssueCreate = await hooks.beforeIssueCreate?.();
-    commitIssueCreate?.();
-    return { status: "created" as const, url };
-  });
-}
-
-export function mockFallbackIssue(fallbackUrl: string | undefined) {
-  return fallbackIssue(fallbackUrl, false);
-}
-
-export function mockFallbackAfterIssueCreateNoStart(fallbackUrl: string | undefined) {
-  return fallbackIssue(fallbackUrl, true);
-}
-
-function fallbackIssue(fallbackUrl: string | undefined, create: boolean) {
-  if (!fallbackUrl) {
-    throw new Error("expected an available browser handoff");
-  }
+function mockIssue<T extends githubIssue.GithubIssueSubmitResult>(result: T, create: boolean) {
   return vi.fn(async (_issue: PreparedGithubIssue, hooks: GithubIssueSubmitHooks) => {
     await hooks.afterAuthPreflight?.();
     if (create) {
       const commitIssueCreate = await hooks.beforeIssueCreate?.();
       commitIssueCreate?.();
     }
-    return {
-      url: fallbackUrl,
-      reason: create ? ("transport-unavailable" as const) : ("cli-unavailable" as const),
-      status: "browser-fallback" as const,
-    };
+    return result;
   });
+}
+
+export const mockCreatedIssue = (url: string) => mockIssue({ status: "created", url }, true);
+export const mockFallbackIssue = (url: string | undefined) => fallbackIssue(url, false);
+export const mockFallbackAfterIssueCreateNoStart = (url: string | undefined) =>
+  fallbackIssue(url, true);
+
+function fallbackIssue(fallbackUrl: string | undefined, create: boolean) {
+  if (!fallbackUrl) {
+    throw new Error("expected an available browser handoff");
+  }
+  return mockIssue(
+    {
+      url: fallbackUrl,
+      reason: create ? "transport-unavailable" : "cli-unavailable",
+      status: "browser-fallback",
+    },
+    create,
+  );
 }
 
 /** Age the persisted lease through a foreign writer, preserving worker-clock behavior. */
