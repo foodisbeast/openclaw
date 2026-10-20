@@ -186,7 +186,17 @@ function flushExitAfterOneShotOutput(
     return;
   }
 
-  const exit = () =>
-    runtime.exit(requestedCode === "process" ? resolveProcessExitCode() : requestedCode);
+  const exit = () => {
+    try {
+      runtime.exit(requestedCode === "process" ? resolveProcessExitCode() : requestedCode);
+    } catch (error) {
+      if (!(error instanceof ExitError) || runtime !== defaultRuntime) {
+        throw error;
+      }
+      // The default runtime now unwinds with a typed exit so V8 compiler work
+      // can drain naturally. Preserve that outcome after stdout/stderr flush.
+      process.exitCode = error.code;
+    }
+  };
   drainProcessOutput(exit);
 }
