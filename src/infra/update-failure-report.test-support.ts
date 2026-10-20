@@ -17,6 +17,10 @@ import { readUpdateFailureReportReceipt } from "./restart-sentinel.js";
 import type { PreparedUpdateFailureReport } from "./update-failure-report-prepare.js";
 import { submitUpdateFailureReport } from "./update-failure-report.js";
 
+type AsyncOverride<F extends (...args: never[]) => unknown> = (
+  ...args: Parameters<F>
+) => ReturnType<F> | Awaited<ReturnType<F>>;
+
 type ReportFixtureControls = {
   createIssue?: (
     issue: PreparedGithubIssue,
@@ -26,18 +30,9 @@ type ReportFixtureControls = {
     issue: PreparedGithubIssue,
     hooks: githubIssue.GithubIssueReconcileHooks,
   ) => Promise<githubIssue.GithubIssueReconcileResult>;
-  finalizeReceipt?: (
-    ...args: Parameters<typeof reportReceipts.finalizeUpdateFailureReportReceipt>
-  ) => boolean | Promise<boolean>;
-  markPending?: (
-    ...args: Parameters<typeof reportReceipts.markUpdateFailureReportReceiptPending>
-  ) => boolean | Promise<boolean>;
-  readReceipt?: (
-    ...args: Parameters<typeof reportReceipts.readUpdateFailureReportReceipt>
-  ) =>
-    | reportReceipts.UpdateFailureReportReceipt
-    | null
-    | Promise<reportReceipts.UpdateFailureReportReceipt | null>;
+  finalizeReceipt?: AsyncOverride<typeof reportReceipts.finalizeUpdateFailureReportReceipt>;
+  markPending?: AsyncOverride<typeof reportReceipts.markUpdateFailureReportReceiptPending>;
+  readReceipt?: AsyncOverride<typeof reportReceipts.readUpdateFailureReportReceipt>;
 };
 
 type ReportFixtureOptions = NonNullable<Parameters<typeof submitUpdateFailureReport>[2]> &
@@ -143,30 +138,26 @@ export function mockCreatedIssue(url: string) {
 }
 
 export function mockFallbackIssue(fallbackUrl: string | undefined) {
-  if (!fallbackUrl) {
-    throw new Error("expected an available browser handoff");
-  }
-  return vi.fn(async (_issue: PreparedGithubIssue, hooks: GithubIssueSubmitHooks) => {
-    await hooks.afterAuthPreflight?.();
-    return {
-      url: fallbackUrl,
-      reason: "cli-unavailable" as const,
-      status: "browser-fallback" as const,
-    };
-  });
+  return fallbackIssue(fallbackUrl, false);
 }
 
 export function mockFallbackAfterIssueCreateNoStart(fallbackUrl: string | undefined) {
+  return fallbackIssue(fallbackUrl, true);
+}
+
+function fallbackIssue(fallbackUrl: string | undefined, create: boolean) {
   if (!fallbackUrl) {
     throw new Error("expected an available browser handoff");
   }
   return vi.fn(async (_issue: PreparedGithubIssue, hooks: GithubIssueSubmitHooks) => {
     await hooks.afterAuthPreflight?.();
-    const commitIssueCreate = await hooks.beforeIssueCreate?.();
-    commitIssueCreate?.();
+    if (create) {
+      const commitIssueCreate = await hooks.beforeIssueCreate?.();
+      commitIssueCreate?.();
+    }
     return {
       url: fallbackUrl,
-      reason: "transport-unavailable" as const,
+      reason: create ? ("transport-unavailable" as const) : ("cli-unavailable" as const),
       status: "browser-fallback" as const,
     };
   });

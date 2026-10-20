@@ -12,6 +12,7 @@ import { resolvePrivateSqliteSnapshotStagingRoot } from "./sqlite-private-direct
 import {
   formatImmutableUpdateCoverage,
   inspectImmutableUpdateCoverage,
+  type ImmutableUpdateCoverage,
 } from "./update-immutable-inspection.js";
 import type { ImmutableInstallRecord } from "./update-immutable-install-schema.js";
 
@@ -46,6 +47,10 @@ afterEach(async () => {
 function write(file: string, contents: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, contents);
+}
+
+function writeJson(file: string, value: unknown) {
+  write(file, JSON.stringify(value));
 }
 
 function database(file: string, version: number) {
@@ -96,14 +101,11 @@ function fixture() {
   insert.run("missing", absentRegistered);
   registry.close();
   write(resource, "plugin-owned synthetic content");
-  write(
-    path.join(pluginRoot, "openclaw.plugin.json"),
-    JSON.stringify({
-      id: "inspection-fixture",
-      configSchema: {},
-      doctorContract: { stateMigrations: true },
-    }),
-  );
+  writeJson(path.join(pluginRoot, "openclaw.plugin.json"), {
+    id: "inspection-fixture",
+    configSchema: {},
+    doctorContract: { stateMigrations: true },
+  });
   write(path.join(pluginRoot, "index.cjs"), 'throw new Error("must not boot plugin");\n');
   write(
     path.join(pluginRoot, "doctor-contract-api.cjs"),
@@ -117,32 +119,29 @@ function fixture() {
       migrateLegacyState() { throw new Error("must not migrate during inspection"); },
     }] };\n`,
   );
-  write(
-    configPath,
-    JSON.stringify({
-      agents: {
-        ownership: "explicit",
-        entries: {
-          main: {},
-          external: { agentDir: path.dirname(external) },
-          absent: { agentDir: path.dirname(absentConfigured) },
-        },
+  writeJson(configPath, {
+    agents: {
+      ownership: "explicit",
+      entries: {
+        main: {},
+        external: { agentDir: path.dirname(external) },
+        absent: { agentDir: path.dirname(absentConfigured) },
       },
-      plugins: {
-        allow: ["inspection-fixture"],
-        load: { paths: [pluginRoot] },
-        entries: { "inspection-fixture": { enabled: true } },
-      },
-    }),
-  );
+    },
+    plugins: {
+      allow: ["inspection-fixture"],
+      load: { paths: [pluginRoot] },
+      entries: { "inspection-fixture": { enabled: true } },
+    },
+  });
   for (const [generationPath, agent] of [
     [currentPath, 24],
     [candidatePath, 25],
   ] as const) {
-    write(
-      path.join(generationPath, "package.json"),
-      JSON.stringify({ name: "openclaw", openclaw: { schemaVersions: { state: 1, agent } } }),
-    );
+    writeJson(path.join(generationPath, "package.json"), {
+      name: "openclaw",
+      openclaw: { schemaVersions: { state: 1, agent } },
+    });
     write(
       path.join(generationPath, "openclaw.mjs"),
       'throw new Error("must not boot candidate");\n',
@@ -232,6 +231,25 @@ function sourceFiles(root: string, excluded: string): Map<string, Buffer> {
   return files;
 }
 
+function expectDatabases(
+  coverage: ImmutableUpdateCoverage,
+  rows: Record<string, Partial<NonNullable<ImmutableUpdateCoverage["databases"]>[number]>>,
+) {
+  for (const [file, row] of Object.entries(rows)) {
+    expect(coverage.databases).toContainEqual(expect.objectContaining({ path: file, ...row }));
+  }
+}
+
+function expectUnchanged(f: ReturnType<typeof fixture>, before: Map<string, Buffer>) {
+  const after = sourceFiles(f.root, path.join(f.root, "cache"));
+  expect([...after.keys()]).toEqual([...before.keys()]);
+  expect(after).toEqual(before);
+  expect(fs.readdirSync(f.scratch)).toEqual([]);
+  expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith(f.capturePrefix))).toEqual(
+    [],
+  );
+}
+
 it("explains prepared schema crossings and complete live inventory without changing source state", async () => {
   const f = fixture();
   const daemon = path.join(f.stateDir, "control", "services.sqlite");
@@ -246,45 +264,30 @@ it("explains prepared schema crossings and complete live inventory without chang
     preparation: "prepared",
     schemaVersions: { state: 1, agent: 25 },
   });
-  expect(coverage.databases).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ path: f.shared, userVersion: 1, coverage: "matching-version" }),
-      expect.objectContaining({
-        path: client,
-        userVersion: 1,
-        targetVersion: 1,
-        coverage: "matching-version",
-      }),
-      expect.objectContaining({
-        path: daemon,
-        userVersion: 1,
-        targetVersion: 1,
-        coverage: "matching-version",
-      }),
-      expect.objectContaining({
-        path: f.external,
-        external: true,
-        userVersion: 24,
-        targetVersion: 25,
-        owners: [{ role: "agent", agentId: "external" }],
-        coverage: "migration-required",
-      }),
-      expect.objectContaining({
-        path: f.retained,
-        external: true,
-        registeredPaths: [f.retained],
-        owners: [{ role: "agent", agentId: "retained" }],
-        coverage: "migration-required",
-      }),
-      expect.objectContaining({ path: f.absentConfigured, userVersion: null, coverage: "absent" }),
-      expect.objectContaining({
-        path: f.absentRegistered,
-        registeredPaths: [f.absentRegistered],
-        userVersion: null,
-        coverage: "absent",
-      }),
-    ]),
-  );
+  expectDatabases(coverage, {
+    [f.shared]: { userVersion: 1, coverage: "matching-version" },
+    [client]: { userVersion: 1, targetVersion: 1, coverage: "matching-version" },
+    [daemon]: { userVersion: 1, targetVersion: 1, coverage: "matching-version" },
+    [f.external]: {
+      external: true,
+      userVersion: 24,
+      targetVersion: 25,
+      owners: [{ role: "agent", agentId: "external" }],
+      coverage: "migration-required",
+    },
+    [f.retained]: {
+      external: true,
+      registeredPaths: [f.retained],
+      owners: [{ role: "agent", agentId: "retained" }],
+      coverage: "migration-required",
+    },
+    [f.absentConfigured]: { userVersion: null, coverage: "absent" },
+    [f.absentRegistered]: {
+      registeredPaths: [f.absentRegistered],
+      userVersion: null,
+      coverage: "absent",
+    },
+  });
   expect(coverage.databases?.filter((row) => row.path === f.main)).toEqual([
     expect.objectContaining({
       spellings: [f.main],
@@ -309,30 +312,21 @@ it("explains prepared schema crossings and complete live inventory without chang
   expect(text).toContain(f.relativeMain);
   expect(text).toContain("migration coverage unknown");
   expect(text).toContain("not physical-schema, migration, backup, or activation readiness proof");
-  const after = sourceFiles(f.root, path.join(f.root, "cache"));
-  expect([...after.keys()]).toEqual([...before.keys()]);
-  expect(after).toEqual(before);
-  expect(fs.readdirSync(f.scratch)).toEqual([]);
-  expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith(f.capturePrefix))).toEqual(
-    [],
-  );
+  expectUnchanged(f, before);
 });
 
 it("reports recorded build isolation for current and prepared generations", async () => {
   const f = fixture();
   for (const generation of [f.currentPath, f.candidatePath]) {
-    write(
-      path.join(generation, "dist", "build-info.json"),
-      JSON.stringify({
-        immutableBuild: {
-          builtBy: "operator",
-          isolation: "none",
-          account: "fixture",
-          uid: 1002,
-          gid: 1002,
-        },
-      }),
-    );
+    writeJson(path.join(generation, "dist", "build-info.json"), {
+      immutableBuild: {
+        builtBy: "operator",
+        isolation: "none",
+        account: "fixture",
+        uid: 1002,
+        gid: 1002,
+      },
+    });
   }
   const coverage = await inspectImmutableUpdateCoverage({ root: f.root });
   expect(coverage.warnings).toEqual([
@@ -351,29 +345,20 @@ it("reports recorded build isolation for current and prepared generations", asyn
 it("keeps an unprepared SHA unknown without reading or running the retained candidate", async () => {
   const f = fixture();
   write(path.join(f.candidatePath, "package.json"), "invalid prepared metadata must not be read");
-  write(
-    path.join(f.candidatePath, "dist", "build-info.json"),
-    JSON.stringify({ immutableBuild: { builtBy: "operator", isolation: "none" } }),
-  );
+  writeJson(path.join(f.candidatePath, "dist", "build-info.json"), {
+    immutableBuild: { builtBy: "operator", isolation: "none" },
+  });
   const before = sourceFiles(f.root, path.join(f.root, "cache"));
   const targetSha = "c".repeat(40);
   const coverage = await inspectImmutableUpdateCoverage({ root: f.root, targetSha });
   expect(coverage.warnings).toEqual([]);
   expect(coverage.target).toEqual({ sha: targetSha, preparation: "unknown" });
-  expect(coverage.databases).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ path: f.external, userVersion: 24, coverage: "unknown" }),
-      expect.objectContaining({ path: f.absentRegistered, userVersion: null, coverage: "absent" }),
-    ]),
-  );
+  expectDatabases(coverage, {
+    [f.external]: { userVersion: 24, coverage: "unknown" },
+    [f.absentRegistered]: { userVersion: null, coverage: "absent" },
+  });
   expect(formatImmutableUpdateCoverage(coverage).join("\n")).toContain(
     "Prepare the exact target with openclaw update --sha <commit> --no-restart",
   );
-  const after = sourceFiles(f.root, path.join(f.root, "cache"));
-  expect([...after.keys()]).toEqual([...before.keys()]);
-  expect(after).toEqual(before);
-  expect(fs.readdirSync(f.scratch)).toEqual([]);
-  expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith(f.capturePrefix))).toEqual(
-    [],
-  );
+  expectUnchanged(f, before);
 });

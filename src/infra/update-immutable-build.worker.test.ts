@@ -23,6 +23,20 @@ vi.mock("./update-runner-git-preflight.js", async (original) => ({
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.restoreAllMocks());
 
+async function runWorker(args: string[], verify: () => Promise<void>) {
+  const argv = process.argv;
+  const exitCode = process.exitCode;
+  process.argv = [process.execPath, "worker", ...args];
+  try {
+    vi.resetModules();
+    await import("./update-immutable-build.worker.js");
+    await verify();
+  } finally {
+    process.argv = argv;
+    process.exitCode = exitCode;
+  }
+}
+
 it("reuses release objects for consecutive preparations and keeps independent generations", async () => {
   const { runCommandWithTimeout: run } =
     await vi.importActual<typeof import("../process/exec.js")>("../process/exec.js");
@@ -145,25 +159,12 @@ child.on('close', code => { process.exitCode = interrupt ? 1 : code; });
       }
       return true;
     });
-    const argv = process.argv;
-    const exitCode = process.exitCode;
-    process.argv = [
-      process.execPath,
-      "worker",
-      stage,
-      sha,
-      "10000",
-      "0",
-      seed,
-      await git(seed, "rev-parse", "HEAD"),
-    ];
     try {
-      vi.resetModules();
-      await import("./update-immutable-build.worker.js");
-      await completed.promise;
+      await runWorker(
+        [stage, sha, "10000", "0", seed, await git(seed, "rev-parse", "HEAD")],
+        () => completed.promise,
+      );
     } finally {
-      process.argv = argv;
-      process.exitCode = exitCode;
       vi.restoreAllMocks();
     }
     const bytes = (await fs.stat(trace).catch(() => ({ size: 0 }))).size;
@@ -204,26 +205,12 @@ it("refuses root before acquiring source or running candidate scripts", async ()
   mocks.preflight.mockClear();
   vi.spyOn(process, "geteuid").mockReturnValue(0);
   const reported = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-  const argv = process.argv;
-  const exitCode = process.exitCode;
-  process.argv = [
-    process.execPath,
-    "worker",
-    "/private-stage",
-    "b".repeat(40),
-    "1000",
-    "0",
-    "/current",
-    "a".repeat(40),
-  ];
-  try {
-    vi.resetModules();
-    await import("./update-immutable-build.worker.js");
-    expect(reported).toHaveBeenCalledWith(expect.stringContaining("non-root"));
-    expect(mocks.command).not.toHaveBeenCalled();
-    expect(mocks.preflight).not.toHaveBeenCalled();
-  } finally {
-    process.argv = argv;
-    process.exitCode = exitCode;
-  }
+  await runWorker(
+    ["/private-stage", "b".repeat(40), "1000", "0", "/current", "a".repeat(40)],
+    async () => {
+      expect(reported).toHaveBeenCalledWith(expect.stringContaining("non-root"));
+      expect(mocks.command).not.toHaveBeenCalled();
+      expect(mocks.preflight).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -62,6 +62,15 @@ function updateResult(status: "ok" | "error"): UpdateRunResult {
   };
 }
 
+const readJson = async (file: string): Promise<unknown> =>
+  JSON.parse(await fs.readFile(file, "utf8"));
+const reportEntries = (fixture: ReturnType<typeof admittedReport>) =>
+  fs.readdir(path.dirname(fixture.outputPath));
+async function fileIdentity(file: string) {
+  const { mode, uid, ino } = await fs.stat(file);
+  return { mode, uid, ino };
+}
+
 describe("update report artifact ownership", () => {
   it("rechecks original authority after waiting for the real report lock", async () => {
     const fixture = admittedReport();
@@ -88,7 +97,7 @@ describe("update report artifact ownership", () => {
     }
     await refused;
     expect(fixture.params.readRun).not.toHaveBeenCalled();
-    expect(await fs.readdir(path.dirname(fixture.outputPath))).toEqual([]);
+    expect(await reportEntries(fixture)).toEqual([]);
   });
 
   it("stops after a committed triage artifact when original authority is revoked", async () => {
@@ -109,11 +118,9 @@ describe("update report artifact ownership", () => {
       }),
     ).rejects.toBe(fixture.revoked);
     expect(diagnostic).toBeDefined();
-    expect(JSON.parse(await fs.readFile(diagnostic!, "utf8"))).toMatchObject({
-      result: { status: "error" },
-    });
+    expect(await readJson(diagnostic!)).toMatchObject({ result: { status: "error" } });
     expect(fixture.params.readRun).toHaveBeenCalledTimes(1);
-    expect(await fs.readdir(path.dirname(fixture.outputPath))).toEqual([]);
+    expect(await reportEntries(fixture)).toEqual([]);
     expect(
       (await fs.readdir(path.dirname(diagnostic!))).toSorted((left, right) =>
         left.localeCompare(right),
@@ -138,9 +145,7 @@ describe("update report artifact ownership", () => {
     expect(fixture.params.readRun).toHaveBeenCalledTimes(1);
     expect(committed).toContain("Admitted update");
     expect(await fs.readFile(fixture.outputPath, "utf8")).toBe(committed);
-    expect(await fs.readdir(path.dirname(fixture.outputPath))).toEqual([
-      path.basename(fixture.outputPath),
-    ]);
+    expect(await reportEntries(fixture)).toEqual([path.basename(fixture.outputPath)]);
   });
 
   it("rechecks authority after staging without replacing the report or leaking its temp", async () => {
@@ -163,16 +168,11 @@ describe("update report artifact ownership", () => {
     });
     // A captured report does not take the missing-history preservation branch.
     await expect(
-      writeUpdateRunReportArtifact({
-        ...fixture.params,
-        readRun: undefined,
-      }),
+      writeUpdateRunReportArtifact({ ...fixture.params, readRun: undefined }),
     ).rejects.toBe(fixture.revoked);
     expect(staged).toBe(true);
     expect(await fs.readFile(fixture.outputPath, "utf8")).toBe("original report");
-    expect(await fs.readdir(path.dirname(fixture.outputPath))).toEqual([
-      path.basename(fixture.outputPath),
-    ]);
+    expect(await reportEntries(fixture)).toEqual([path.basename(fixture.outputPath)]);
   });
 
   it.each(["ok", "error"] as const)(
@@ -187,64 +187,48 @@ describe("update report artifact ownership", () => {
       }
       const sentinel = path.join(sharedTemp, "unrelated.txt");
       await fs.writeFile(sentinel, "unrelated artifact");
-      const parentBefore = await fs.stat(sharedTemp);
-      const sentinelBefore = await fs.stat(sentinel);
-      const tmpdir = vi.spyOn(os, "tmpdir").mockReturnValue(sharedTemp);
-      try {
-        const reportPath = await writeUpdateRunReportArtifact({
-          result: updateResult(status),
-          report: { markdown: "Update report" },
-          env: { OPENCLAW_STATE_DIR: stateDir },
-          detached: true,
+      const parentBefore = await fileIdentity(sharedTemp);
+      const sentinelBefore = await fileIdentity(sentinel);
+      vi.spyOn(os, "tmpdir").mockReturnValue(sharedTemp);
+      const reportPath = await writeUpdateRunReportArtifact({
+        result: updateResult(status),
+        report: { markdown: "Update report" },
+        env: { OPENCLAW_STATE_DIR: stateDir },
+        detached: true,
+      });
+      const reportDir = path.dirname(reportPath);
+      expect(reportDir).not.toBe(sharedTemp);
+      expect(path.dirname(reportDir)).toBe(sharedTemp);
+      expect(await fs.readFile(reportPath, "utf8")).toContain("Update report");
+      const entries = await fs.readdir(reportDir);
+      expect(entries).toHaveLength(status === "error" ? 3 : 1);
+      if (status === "error") {
+        const diagnostic = entries.find((entry) => entry.startsWith("openclaw-update-failure-"))!;
+        expect(await readJson(path.join(reportDir, diagnostic))).toMatchObject({
+          result: { status: "error" },
         });
-        const reportDir = path.dirname(reportPath);
-        expect(reportDir).not.toBe(sharedTemp);
-        expect(path.dirname(reportDir)).toBe(sharedTemp);
-        expect(await fs.readFile(reportPath, "utf8")).toContain("Update report");
-        const entries = await fs.readdir(reportDir);
-        expect(entries).toHaveLength(status === "error" ? 3 : 1);
-        if (status === "error") {
-          const diagnostic = entries.find((entry) => entry.startsWith("openclaw-update-failure-"))!;
-          expect(
-            JSON.parse(await fs.readFile(path.join(reportDir, diagnostic), "utf8")),
-          ).toMatchObject({
-            result: { status: "error" },
-          });
-          expect(await fs.readFile(reportPath, "utf8")).toContain(diagnostic);
-          const inventory = entries.find((entry) => entry.startsWith("openclaw-update-lint-"))!;
-          expect(
-            JSON.parse(await fs.readFile(path.join(reportDir, inventory), "utf8")),
-          ).toMatchObject({
-            result: {
-              steps: [
-                expect.objectContaining({
-                  doctorLintFindings: [expect.objectContaining({ checkId: "core/config" })],
-                }),
-              ],
-            },
-          });
-        }
-        expect(await fs.stat(sharedTemp)).toMatchObject({
-          mode: parentBefore.mode,
-          uid: parentBefore.uid,
-          ino: parentBefore.ino,
+        expect(await fs.readFile(reportPath, "utf8")).toContain(diagnostic);
+        const inventory = entries.find((entry) => entry.startsWith("openclaw-update-lint-"))!;
+        expect(await readJson(path.join(reportDir, inventory))).toMatchObject({
+          result: {
+            steps: [
+              expect.objectContaining({
+                doctorLintFindings: [expect.objectContaining({ checkId: "core/config" })],
+              }),
+            ],
+          },
         });
-        expect(await fs.stat(sentinel)).toMatchObject({
-          mode: sentinelBefore.mode,
-          uid: sentinelBefore.uid,
-          ino: sentinelBefore.ino,
-        });
-        expect(await fs.readFile(sentinel, "utf8")).toBe("unrelated artifact");
-        if (process.platform !== "win32") {
-          expect((await fs.stat(reportDir)).mode & 0o777).toBe(0o700);
-          for (const entry of entries) {
-            expect((await fs.stat(path.join(reportDir, entry))).mode & 0o777).toBe(0o600);
-          }
-        }
-        await expect(fs.stat(stateDir)).rejects.toMatchObject({ code: "ENOENT" });
-      } finally {
-        tmpdir.mockRestore();
       }
+      expect(await fileIdentity(sharedTemp)).toEqual(parentBefore);
+      expect(await fileIdentity(sentinel)).toEqual(sentinelBefore);
+      expect(await fs.readFile(sentinel, "utf8")).toBe("unrelated artifact");
+      if (process.platform !== "win32") {
+        expect((await fs.stat(reportDir)).mode & 0o777).toBe(0o700);
+        for (const entry of entries) {
+          expect((await fs.stat(path.join(reportDir, entry))).mode & 0o777).toBe(0o600);
+        }
+      }
+      await expect(fs.stat(stateDir)).rejects.toMatchObject({ code: "ENOENT" });
     },
   );
 
