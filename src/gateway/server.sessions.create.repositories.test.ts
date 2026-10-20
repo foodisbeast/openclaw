@@ -130,17 +130,15 @@ test("sessions.create retains a cloud repository across replay without creating 
       const cacheLifetime = new AbortController();
       onTestFinished(() => cacheLifetime.abort());
       const params = { sessionKey: key, agentId: "main" };
-      const loadPullRequests = (
-        options: Parameters<typeof loadControlUiSessionPullRequests>[1] = {},
-      ) =>
+      const loadPullRequests = (resolveGitRoot?: () => Promise<string>) =>
         loadControlUiSessionPullRequests(params, {
           cacheSignal: cacheLifetime.signal,
-          ...options,
+          resolveGitRoot,
         });
       await loadPullRequests();
       const repositoryPins = getEventListeners(cacheLifetime.signal, "abort").length;
       expect(repositoryPins).toBeGreaterThan(0);
-      await loadPullRequests({ resolveGitRoot: async () => workspace });
+      await loadPullRequests(async () => workspace);
       expect(getEventListeners(cacheLifetime.signal, "abort")).toHaveLength(repositoryPins);
       gitRead.mockClear();
       const preview = await loadPullRequests();

@@ -27,18 +27,14 @@ export function createGoalChatStartRequest(
 }
 
 export function readGoalChatUserMessages(scope: GoalChatScope) {
-  const transcriptScope = {
+  return loadTranscriptEventsSync({
     ...scope,
     sessionId: loadSessionEntry(scope)?.sessionId ?? scope.sessionId,
-  };
-  return loadTranscriptEventsSync(transcriptScope).flatMap((event) => {
-    if (!event || typeof event !== "object" || !("message" in event)) {
+  }).flatMap((event) => {
+    if (!isRecord(event) || !isRecord(event.message)) {
       return [];
     }
-    const message = event.message;
-    return message && typeof message === "object" && "role" in message && message.role === "user"
-      ? [message]
-      : [];
+    return event.message.role === "user" ? [event.message] : [];
   });
 }
 

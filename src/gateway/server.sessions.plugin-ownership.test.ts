@@ -31,12 +31,8 @@ const pluginOptions = (scope: "operator.write" | "operator.admin") => ({
 });
 const writeOptions = pluginOptions("operator.write");
 const adminOptions = pluginOptions("operator.admin");
-const request = (
-  action: "reset" | "patch",
-  key: string,
-  params: Record<string, unknown> = {},
-  options = writeOptions,
-) => directSessionReq(`sessions.${action}`, { key, ...params }, options);
+const patch = (key: string, label: string, options = adminOptions) =>
+  directSessionReq("sessions.patch", { key, label }, options);
 function expectDenied(result: unknown, action: "reset" | "patch", key: string) {
   expect(result).toMatchObject({
     ok: false,
@@ -52,7 +48,8 @@ const seed = (pluginOwnerId = "memory-core") =>
 
 test("sessions.reset prevents a plugin from resetting another plugin's session", async () => {
   await seed("other-plugin");
-  expectDenied(await request("reset", sessionKey), "reset", sessionKey);
+  const reset = await directSessionReq("sessions.reset", { key: sessionKey }, writeOptions);
+  expectDenied(reset, "reset", sessionKey);
   expect(readEntry()).toMatchObject({
     sessionId,
     pluginOwnerId: "other-plugin",
@@ -60,14 +57,14 @@ test("sessions.reset prevents a plugin from resetting another plugin's session",
 });
 
 test("sessions.reset stamps plugin ownership when it materializes a missing session", async () => {
-  const reset = await request("reset", sessionKey);
+  const reset = await directSessionReq("sessions.reset", { key: sessionKey }, writeOptions);
 
   expect(reset.ok, JSON.stringify(reset.error)).toBe(true);
   expect(readEntry()).toMatchObject({
     pluginOwnerId: "memory-core",
   });
 
-  const patched = await request("patch", sessionKey, { label: "Reset-created plugin session" });
+  const patched = await patch(sessionKey, "Reset-created plugin session", writeOptions);
 
   expect(patched.ok, JSON.stringify(patched.error)).toBe(true);
 });
@@ -110,17 +107,12 @@ test("sessions.patch limits plugin-runtime mutations to sessions owned by that p
     },
   });
   for (const key of [foreignKey, operatorKey]) {
-    const denied = await request("patch", key, { label: "unauthorized mutation" }, adminOptions);
+    const denied = await patch(key, "unauthorized mutation");
     expectDenied(denied, "patch", key);
     expect(readEntry(key)?.label).toBeUndefined();
   }
 
-  const patched = await request(
-    "patch",
-    sessionKey,
-    { label: "authorized mutation" },
-    adminOptions,
-  );
+  const patched = await patch(sessionKey, "authorized mutation");
 
   expect(patched.ok, JSON.stringify(patched.error)).toBe(true);
   expect(readEntry()?.label).toBe("authorized mutation");
@@ -139,17 +131,12 @@ test("sessions.patch rechecks plugin ownership after waiting for lifecycle admis
     },
   });
   await mutationStarted;
-  const patch = request(
-    "patch",
-    sessionKey,
-    { label: "unauthorized raced mutation" },
-    adminOptions,
-  );
+  const pendingPatch = patch(sessionKey, "unauthorized raced mutation");
   await Promise.resolve();
   await replaceSessionEntry({ sessionKey, storePath }, ownedEntry("other-plugin"));
   releaseMutation.resolve();
 
-  const [patched] = await Promise.all([patch, mutation]);
+  const [patched] = await Promise.all([pendingPatch, mutation]);
 
   expect(patched.ok).toBe(false);
   expect(patched.error?.message).toContain("did not create it");

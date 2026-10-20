@@ -31,10 +31,8 @@ installGatewayTestHooks({
     harness = await acquisition.finally(() => capture.mockRestore());
   },
   cleanup: async () => {
-    await acquisition?.then(
-      (result) => result.close(),
-      () => {},
-    );
+    const ready = await acquisition?.catch(() => undefined);
+    await ready?.close();
   },
 });
 

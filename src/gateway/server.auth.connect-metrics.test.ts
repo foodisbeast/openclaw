@@ -47,12 +47,12 @@ test("measures connect delivery and closed admission without payloads", async ()
         browserOrigin: origin,
       });
     const events: Extract<DiagnosticEventPayload, { type: "gateway.rpc" }>[] = [];
-    const responses: Record<string, unknown>[] = [];
+    let responseLog: Record<string, unknown> | undefined;
     const originalLogWs = wsLog.logWs;
     const logSpy = vi.spyOn(wsLog, "logWs").mockImplementation((direction, kind, metaInput) => {
       const meta = typeof metaInput === "function" ? metaInput() : metaInput;
       if (direction === "out" && kind === "res" && meta?.method === "connect") {
-        responses.push(meta);
+        responseLog = meta;
       }
       originalLogWs(direction, kind, meta);
     });
@@ -79,7 +79,7 @@ test("measures connect delivery and closed admission without payloads", async ()
       { outcome: "unavailable", rejected: true },
     ] as const) {
       events.length = 0;
-      responses.length = 0;
+      responseLog = undefined;
       const socket = await openWs(port, {
         origin,
         "x-forwarded-for": "203.0.113.50",
@@ -145,7 +145,6 @@ test("measures connect delivery and closed admission without payloads", async ()
           },
         ]);
         expect(JSON.stringify(events)).not.toContain("private-");
-        const responseLog = responses.at(-1);
         if (outcome !== "unavailable") {
           expect(responseLog).toBeDefined();
           if (rejected) {

@@ -40,6 +40,8 @@ vi.mock("../infra/gateway-scheduler.js", async (importOriginal) => {
 
 it("owns diagnostic dispatch and heartbeat across initial disable, enable, disable, and close", async () => {
   const previouslyEnabled = areDiagnosticsEnabledForProcess();
+  await using cleanup = new AsyncDisposableStack();
+  cleanup.defer(() => setDiagnosticsEnabledForProcess(previouslyEnabled));
   const state = await createOpenClawTestState({
     label: "gateway-diagnostics-policy",
     env: {
@@ -47,28 +49,19 @@ it("owns diagnostic dispatch and heartbeat across initial disable, enable, disab
       OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
     },
   });
-  let kernel: Awaited<ReturnType<typeof createGatewayKernel>> | undefined = undefined;
-  let unsubscribe: (() => void) | undefined = undefined;
-  let pool:
-    | ReturnType<typeof createOwnedWorkerTaskPool<PoolFixtureInput, PoolFixtureResult>>
-    | undefined = undefined;
-  let active: ReturnType<NonNullable<typeof pool>["runTask"]> | undefined = undefined;
-  const entered = createDeferredCore();
-  const release = createDeferredCore();
-  const pressure = channel("openclaw.memory.critical");
-  const pressureSamples = vi.fn();
-  pressure.subscribe(pressureSamples);
-  await using cleanup = new AsyncDisposableStack();
-  cleanup.defer(() => setDiagnosticsEnabledForProcess(previouslyEnabled));
   cleanup.defer(() => state.cleanup());
   cleanup.defer(() => {
     delete schedulerClock.clock;
     vi.restoreAllMocks();
   });
-  cleanup.defer(() => kernel?.closeOnStartupFailure());
-  cleanup.defer(() => pool?.close());
-  cleanup.defer(() => active?.close());
-  cleanup.defer(() => {
+  let unsubscribe: (() => void) | undefined = undefined;
+  const entered = createDeferredCore();
+  const release = createDeferredCore();
+  const pressure = channel("openclaw.memory.critical");
+  const pressureSamples = vi.fn();
+  pressure.subscribe(pressureSamples);
+  using observers = new DisposableStack();
+  observers.defer(() => {
     release.resolve();
     unsubscribe?.();
     pressure.unsubscribe(pressureSamples);
@@ -81,20 +74,22 @@ it("owns diagnostic dispatch and heartbeat across initial disable, enable, disab
   state.applyEnv();
   const clock = createGatewaySchedulerClock(Date.now());
   schedulerClock.clock = clock.clock;
-  kernel = await createGatewayKernel(port, {
+  const kernel = await createGatewayKernel(port, {
     auth: { mode: "none" },
     bind: "loopback",
     controlUiEnabled: false,
     sidecarStartup: "defer",
   });
+  cleanup.defer(() => kernel.closeOnStartupFailure());
   expect(areDiagnosticsEnabledForProcess()).toBe(false);
   const spawned = vi.spyOn(workerCpu, "createCpuTrackedWorker");
-  pool = createOwnedWorkerTaskPool<PoolFixtureInput, PoolFixtureResult>({
+  const pool = createOwnedWorkerTaskPool<PoolFixtureInput, PoolFixtureResult>({
     workerUrl: new URL("../infra/worker-task-pool.test-support.ts", import.meta.url),
     maxWorkers: 2,
   });
+  cleanup.defer(() => pool.close());
   const warm = await pool.run({ label: "warm" }, {});
-  active = pool.runTask(
+  const active = pool.runTask(
     { label: "active", exchanges: 1 },
     {
       onRequest: async () => {
@@ -104,6 +99,7 @@ it("owns diagnostic dispatch and heartbeat across initial disable, enable, disab
       },
     },
   );
+  cleanup.defer(() => active.close());
   await Promise.race([
     entered.promise,
     active.result.then(() => {
