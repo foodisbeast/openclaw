@@ -1,6 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import { getOrCreateWeakOwnerMap } from "../shared/weak-owner-map.js";
 import { getPluginHttpRouteCanonicalPath } from "./http-path.js";
 import { pluginInstanceInvocation } from "./plugin-instance-invocation.js";
 import {
@@ -80,8 +79,16 @@ export function runPluginHttpRoute<T>(
     : run();
 }
 
+function viewsByOwner(registry: PluginRegistry) {
+  let owners = registryViews.get(registry);
+  if (!owners) {
+    registryViews.set(registry, (owners = new Map()));
+  }
+  return owners;
+}
+
 function ownerViews(registry: PluginRegistry, owner: RouteOwner): RouteViews {
-  const owners = getOrCreateWeakOwnerMap(registryViews, registry);
+  const owners = viewsByOwner(registry);
   let views = owners.get(owner);
   if (!views) {
     owners.set(owner, (views = new Set([new WeakRef(registry)])));
@@ -127,13 +134,13 @@ export function projectPluginHttpRoutes(
   const owns = (route: PluginHttpRouteRegistration) => resolveEntryOwner(source, route) === owner;
   if (target) {
     target.httpRoutes.push(...source.httpRoutes.filter(owns));
-    getOrCreateWeakOwnerMap(registryViews, target).set(owner, views);
+    viewsByOwner(target).set(owner, views);
     if (!liveViews(views).includes(target)) {
       views.add(new WeakRef(target));
     }
   } else {
     source.httpRoutes = source.httpRoutes.filter((route) => !owns(route));
-    getOrCreateWeakOwnerMap(registryViews, source).delete(owner);
+    viewsByOwner(source).delete(owner);
     for (const ref of views) {
       if (ref.deref() === source) {
         views.delete(ref);
