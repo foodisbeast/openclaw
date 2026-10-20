@@ -80,8 +80,7 @@ it.each(["", "Partial reply"])(
       );
     await persist();
     await persist();
-    const lines = await loadTranscriptEvents(scope);
-    const messages = lines.flatMap((line) =>
+    const messages = (await loadTranscriptEvents(scope)).flatMap((line) =>
       isRecord(line) && line.type === "message" && isRecord(line.message) ? [line.message] : [],
     );
     const results = messages.filter((message) => message.role === "toolResult");

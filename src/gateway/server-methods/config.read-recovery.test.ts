@@ -47,10 +47,8 @@ function patchHarness(baseHash = "base-hash") {
   });
 }
 
-function expectUnavailable(
-  { respond }: ReturnType<typeof createConfigHandlerHarness>,
-  details: unknown,
-) {
+type Harness = ReturnType<typeof createConfigHandlerHarness>;
+function expectUnavailable({ respond }: Harness, details: unknown) {
   expect(respond).toHaveBeenCalledExactlyOnceWith(
     false,
     undefined,

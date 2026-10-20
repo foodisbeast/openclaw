@@ -62,13 +62,14 @@ beforeEach(() => {
   readPolicy.mockResolvedValue(enabled);
 });
 
-afterEach(() => {
-  vi.clearAllMocks();
-  readPolicySync.mockReset();
-  readPolicy.mockReset();
-});
+afterEach(() => vi.clearAllMocks());
 
 const params = { source, planIntegrity: "sha256:reviewed", acknowledgeCapabilities: [] };
+const plan = { operation: "add", planIntegrity: "sha256:reviewed", target: { agentId } };
+
+function makeCron<T extends object>(overrides: T) {
+  return { add: vi.fn(), list: vi.fn().mockResolvedValue([]), ...overrides };
+}
 
 async function callAdd(
   operation: "plan" | "apply",
@@ -79,6 +80,11 @@ async function callAdd(
     applyPluginLifecycleChange?: unknown;
   } = {},
 ) {
+  const {
+    hasCurrentClientAuthority,
+    cron = { add: vi.fn(), list: vi.fn() },
+    ...lifecycle
+  } = options;
   const method = `claws.add.${operation}`;
   const respond = vi.fn<RespondFn>();
   const handler = expectDefined(clawsAddHandlers[method], method);
@@ -88,22 +94,13 @@ async function callAdd(
     respond,
     context: {
       getRuntimeConfig,
-      ...(operation === "apply"
-        ? {
-            cron: options.cron ?? { add: vi.fn(), list: vi.fn() },
-            ...(options.applyPluginLifecycleChange
-              ? { applyPluginLifecycleChange: options.applyPluginLifecycleChange }
-              : {}),
-          }
-        : {}),
+      ...(operation === "apply" ? { cron, ...lifecycle } : {}),
     } as never,
     client:
       operation === "apply"
         ? ({ connect: { role: "operator", scopes: ["operator.admin"] } } as never)
         : null,
-    ...(options.hasCurrentClientAuthority
-      ? { hasCurrentClientAuthority: options.hasCurrentClientAuthority }
-      : {}),
+    ...(hasCurrentClientAuthority ? { hasCurrentClientAuthority } : {}),
     isWebchatConnect: () => false,
   });
   return respond.mock.calls;
@@ -124,11 +121,6 @@ describe("claws.add.plan Gateway method", () => {
   it.each([enabled, onDisk])(
     "plans from the persisted roster, not a stale Gateway cache (%j)",
     async (config) => {
-      const plan = {
-        operation: "add",
-        planIntegrity: "sha256:reviewed",
-        target: { agentId },
-      };
       readPolicy.mockResolvedValue(config);
       planAdd.mockResolvedValue(plan);
       const request = await callAdd("plan");
@@ -143,7 +135,6 @@ describe("claws.add.plan Gateway method", () => {
 
   it("drops a preview if Labs is switched off mid-request", async () => {
     let calls = 0;
-    const plan = { operation: "add", planIntegrity: "sha256:reviewed" };
     planAdd.mockResolvedValue(plan);
     const request = await callAdd("plan", () => (calls++ === 0 ? enabled : {}));
     expect(request[0]?.[2]).toMatchObject({ code: "FORBIDDEN" });
@@ -279,7 +270,7 @@ describe("claws.add.apply Gateway method", () => {
   });
 
   it("validates Claw schedule delivery before calling the scheduler", async () => {
-    const cron = { add: vi.fn(), list: vi.fn().mockResolvedValue([]) };
+    const cron = makeCron({});
     const config = { ...enabled, cron: { failureAlert: { channel: "unconfigured" } } };
     validateDelivery.mockRejectedValueOnce(new Error("Unconfigured failure route"));
     applyAdd.mockImplementation(async (input) => {
@@ -298,12 +289,10 @@ describe("claws.add.apply Gateway method", () => {
 
   it("exposes guarded scheduler reads and removal for Add rollback", async () => {
     const job = { id: "job-1", agentId };
-    const cron = {
-      add: vi.fn(),
-      list: vi.fn().mockResolvedValue([]),
+    const cron = makeCron({
       readJob: vi.fn().mockResolvedValue(job),
       remove: vi.fn().mockResolvedValue({ ok: true, removed: true }),
-    };
+    });
     const commitGuard = vi.fn();
     applyAdd.mockImplementation(async (input) => {
       expect(await input.cronGateway.get("job-1")).toEqual(job);
@@ -328,11 +317,7 @@ describe("claws.add.apply Gateway method", () => {
   it("rolls back only the unchanged new agent and its scheduled work", async () => {
     const expectedAgentConfig = { id: agentId, workspace: "/tmp/workflow-operator" };
     const removeAgentJobsTransactional = vi.fn(async (_agentId, commit) => await commit());
-    const cron = {
-      add: vi.fn(),
-      list: vi.fn().mockResolvedValue([]),
-      removeAgentJobsTransactional,
-    };
+    const cron = makeCron({ removeAgentJobsTransactional });
     applyAdd.mockImplementation(async (input) => {
       await input.rollbackNewAgent(agentId, expectedAgentConfig, []);
       return complete;
@@ -353,11 +338,10 @@ describe("claws.add.apply Gateway method", () => {
   });
 
   it("keeps the new agent when another automation appears before rollback", async () => {
-    const cron = {
-      add: vi.fn(),
+    const cron = makeCron({
       list: vi.fn().mockResolvedValue([{ id: "user-job", agentId }]),
       removeAgentJobsTransactional: vi.fn(),
-    };
+    });
     applyAdd.mockImplementation(async (input) => {
       await input.rollbackNewAgent(agentId, {}, []);
     });
@@ -370,8 +354,7 @@ describe("claws.add.apply Gateway method", () => {
   });
 
   it("rejects a declaration created after the Claw list check without mutating it", async () => {
-    const cron = {
-      list: vi.fn().mockResolvedValue([]),
+    const cron = makeCron({
       add: vi.fn(async (_input, options) => {
         options.matchesExisting({
           declarationKey: schedule.declarationKey,
@@ -380,7 +363,7 @@ describe("claws.add.apply Gateway method", () => {
         });
         return { id: "intervening-job" };
       }),
-    };
+    });
     validateDelivery.mockResolvedValue(undefined);
     applyAdd.mockImplementation(async (input) => {
       expect(await input.cronGateway.list(agentId)).toEqual({ jobs: [] });
@@ -394,25 +377,22 @@ describe("claws.add.apply Gateway method", () => {
   });
 
   it("rechecks reviewed access at the scheduler's actual Add commit", async () => {
-    let accessCurrent = true;
+    const commitGuard = vi.fn();
     const persisted = vi.fn();
-    const cron = {
-      list: vi.fn().mockResolvedValue([]),
+    const cron = makeCron({
       add: vi.fn(async (_input, options) => {
-        accessCurrent = false;
+        commitGuard.mockImplementation(() => {
+          throw new Error("Reviewed access revoked");
+        });
         options.commitGuard();
         persisted();
         return { id: "new-job" };
       }),
-    };
+    });
     validateDelivery.mockResolvedValue(undefined);
     applyAdd.mockImplementation(async (input) => {
       await input.cronGateway.add(schedule, {
-        commitGuard: () => {
-          if (!accessCurrent) {
-            throw new Error("Reviewed Claw access changed before cron commit.");
-          }
-        },
+        commitGuard,
       });
       return complete;
     });
@@ -425,21 +405,19 @@ describe("claws.add.apply Gateway method", () => {
   });
 
   it("rechecks reviewed access at the plugin reload's persistent apply", async () => {
-    let accessCurrent = true;
+    const commitGuard = vi.fn();
     const applied = vi.fn();
     reloadPlugin.mockImplementation(async ({ beforePersistentApply }) => {
-      accessCurrent = false;
+      commitGuard.mockImplementation(() => {
+        throw new Error("Reviewed access revoked");
+      });
       beforePersistentApply();
       applied();
       return { application: { status: "applied" } };
     });
     applyAdd.mockImplementation(async (input) => {
       await input.reloadPlugins(["workflow-plugin"], {
-        commitGuard: () => {
-          if (!accessCurrent) {
-            throw new Error("Reviewed Claw access changed before plugin reload.");
-          }
-        },
+        commitGuard,
       });
       return complete;
     });

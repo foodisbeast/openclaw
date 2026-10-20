@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
@@ -23,6 +24,8 @@ const permissions = { contents: "write" as const, metadata: "read" as const };
 const time = "2026-10-10T10:00:00Z";
 const repo = { id: 404, fullName: "example/project" };
 const apiRepo = { id: repo.id, full_name: repo.fullName };
+const target = { owner: "example", repo: "project", number: 7 };
+const preview = { ...target, title: "Private session pull request" };
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -92,10 +95,10 @@ it.each([
           const url = new URL(input instanceof Request ? input.url : String(input));
           requests.push(url.origin + url.pathname);
           if (url.origin === "http://127.0.0.1:8080") {
-            const proof = new Headers(init?.headers).get("x-factory-github-proof");
-            if (!proof) {
-              throw new Error("Missing fixture broker proof");
-            }
+            const proof = expectDefined(
+              new Headers(init?.headers).get("x-factory-github-proof"),
+              "fixture broker proof",
+            );
             const claim = redeemFactoryGitHubProof(proof);
             claims.push(claim);
             if (scenario === "admission-denied") {
@@ -161,24 +164,20 @@ it.each([
               await f.changeReader("grant");
             }
             return Response.json({
-              title: "Private session pull request",
+              title: preview.title,
               state: "open",
               created_at: time,
               updated_at: time,
               base: { repo: { url: `${apiBaseUrl}/repos/example/project` } },
             });
           }
-          if (!(url.pathname in bodies)) {
-            throw new Error(`Unexpected synthetic endpoint ${url.pathname}`);
-          }
-          return Response.json(bodies[url.pathname]);
+          return Response.json(expectDefined(bodies[url.pathname], `endpoint ${url.pathname}`));
         });
         vi.stubGlobal("fetch", fetcher);
         const params = {
           kind: "pull",
-          owner: "example",
+          ...target,
           repo: scenario === "foreign-repository" ? "other" : "project",
-          number: 7,
           githubHost: scenario === "foreign-host" ? "other.example.test" : host,
           sessionKey,
           agentId: "main",
@@ -191,16 +190,10 @@ it.each([
           isWebchatConnect: () => false,
           respond,
         });
-        expect(respond).toHaveBeenCalledOnce();
         if (scenario === "allowed" || scenario === "multiple-repositories") {
-          expect(respond).toHaveBeenCalledWith(
+          expect(respond).toHaveBeenCalledExactlyOnceWith(
             true,
-            expect.objectContaining({
-              title: "Private session pull request",
-              owner: "example",
-              repo: "project",
-              number: 7,
-            }),
+            expect.objectContaining(preview),
             undefined,
           );
           expect(claims).toHaveLength(1);
@@ -219,7 +212,7 @@ it.each([
           });
           expect(requests.at(-1)).toBe(`${apiBaseUrl}/installation/token`);
         } else {
-          expect(respond.mock.calls[0]?.slice(0, 2)).toEqual([false, undefined]);
+          expect(respond.mock.calls.map((args) => args.slice(0, 2))).toEqual([[false, undefined]]);
           if (["foreign-repository", "foreign-host", "actor-mismatch"].includes(scenario)) {
             expect(fetcher).not.toHaveBeenCalled();
           }

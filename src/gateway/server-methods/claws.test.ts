@@ -25,19 +25,17 @@ function catalogRequest(
   params: Record<string, unknown>,
   getRuntimeConfig: () => unknown = () => enabled,
 ) {
-  const replies: Parameters<RespondFn>[] = [];
-  const pending = expectDefined(
-    clawsHandlers[method],
-    `${method} handler`,
-  )({
+  const respond = vi.fn<RespondFn>();
+  const handler = expectDefined(clawsHandlers[method], `${method} handler`);
+  const pending = handler({
     req: { type: "req", id: "catalog", method },
     params,
-    respond: (...args) => replies.push(args),
+    respond,
     context: { getRuntimeConfig } as never,
     client: null,
     isWebchatConnect: () => false,
   });
-  return { replies, pending };
+  return { replies: respond.mock.calls, pending };
 }
 
 it("does not expose installed-Claw status as a Gateway method", () => {

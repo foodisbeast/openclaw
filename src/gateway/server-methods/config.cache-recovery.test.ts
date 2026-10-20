@@ -39,6 +39,7 @@ vi.mock("../../config/runtime-schema.js", async (importOriginal) => ({
 
 let storedConfig: OpenClawConfig;
 let storedHash: string;
+type Harness = ReturnType<typeof createConfigHandlerHarness>;
 function readSnapshot() {
   const result = createConfigWriteSnapshot(storedConfig);
   result.snapshot.hash = storedHash;
@@ -48,11 +49,7 @@ function externalEdit() {
   storedConfig = { logging: { level: "warn" } };
   storedHash = "external-hash";
 }
-function expectConfig(
-  { respond }: ReturnType<typeof createConfigHandlerHarness>,
-  hash: string,
-  level: string,
-) {
+function expectConfig({ respond }: Harness, hash: string, level: string) {
   expect(respond).toHaveBeenLastCalledWith(
     true,
     expect.objectContaining({ hash, config: { logging: { level } } }),

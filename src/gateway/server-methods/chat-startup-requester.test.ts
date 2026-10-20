@@ -1,4 +1,3 @@
-import { DatabaseSync, StatementSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
@@ -8,6 +7,7 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { readResidentUserProfileIdentity } from "../../state/user-profile-list.js";
 import { linkEmail } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
+import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { chatHistoryHandlers } from "./chat-history-handler.js";
@@ -21,21 +21,14 @@ const scope = { agentId: "main", sessionKey: "agent:main:requester-history" };
 
 type StartupReader = NonNullable<GatewayRequestContext["readChatStartupProjection"]>;
 
-function withoutSqlite<T>(run: () => T, full = false): T {
-  const spies = full
-    ? [
-        vi.spyOn(DatabaseSync.prototype, "exec"),
-        ...(["all", "get", "iterate", "run"] as const).map((op) =>
-          vi.spyOn(StatementSync.prototype, op),
-        ),
-      ]
-    : [vi.spyOn(StatementSync.prototype, "get")];
+function withoutSqlite<T>(run: () => T): T {
+  const sql = observeMainThreadSql();
   try {
     return run();
   } finally {
-    const calls = spies.map((spy) => spy.mock.calls.length);
-    spies.forEach((spy) => spy.mockRestore());
-    expect(calls.reduce((sum, count) => sum + count, 0)).toBe(0);
+    const calls = sql.count();
+    sql.restore();
+    expect(calls).toBe(0);
   }
 }
 
@@ -92,7 +85,7 @@ it("prepares the startup requester without SQLite and observes a merge after his
         }
         // Only the synchronous metadata preparation is SQL-free, not transcript/sharing reads.
         projections++;
-        return withoutSqlite(() => measure(name, run, options), true);
+        return withoutSqlite(() => measure(name, run, options));
       },
     );
     await request(context, client);
@@ -153,11 +146,9 @@ it("preserves legacy email creation and failed identity synchronization", async 
       if (kind !== "missing") {
         delete client.authenticatedUserProfile;
       }
-      const sync = vi.fn<NonNullable<GatewayClient["authenticatedGitHubIdentitySync"]>>(
-        async () => {
-          throw new Error("unexpected identity synchronization");
-        },
-      );
+      const sync = vi
+        .fn<NonNullable<GatewayClient["authenticatedGitHubIdentitySync"]>>()
+        .mockRejectedValue(new Error("unexpected identity synchronization"));
       if (kind === "github") {
         client.authenticatedGitHubIdentitySync = sync;
       }
