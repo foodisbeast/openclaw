@@ -11,25 +11,38 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
+async function mountPicker(props: Omit<Parameters<typeof ModelPicker>[0], "label">) {
+  const view = mountSolid(() => <ModelPicker label="Model" {...props} />);
+  await updatePickers(view.container);
+  return {
+    ...view,
+    picker: view.container.querySelector<SelectPicker>("openclaw-select-picker")!,
+  };
+}
+
+const fixtureOption = (name: string, detail?: string) => ({
+  value: `openai/fixture-${name.toLowerCase()}`,
+  label: `Fixture ${name}`,
+  provider: "openai",
+  detail,
+});
+
 describe("ModelPicker", () => {
   it("keeps disabled provider groups settled and usable after re-enabling", async () => {
     const [disabled, setDisabled] = createSignal(false);
     const onChange = vi.fn();
-    const { container } = mountSolid(() => (
-      <ModelPicker
-        label="Model"
-        value="fixture/alpha"
-        options={[
-          { value: "fixture/alpha", label: "Alpha", provider: "fixture" },
-          { value: "fixture/beta", label: "Beta", provider: "fixture" },
-        ]}
-        disabled={disabled()}
-        groupByProvider
-        onChange={onChange}
-      />
-    ));
-    await updatePickers(container);
-    const picker = container.querySelector<SelectPicker>("openclaw-select-picker")!;
+    const { container, picker } = await mountPicker({
+      value: "fixture/alpha",
+      options: [
+        { value: "fixture/alpha", label: "Alpha", provider: "fixture" },
+        { value: "fixture/beta", label: "Beta", provider: "fixture" },
+      ],
+      get disabled() {
+        return disabled();
+      },
+      groupByProvider: true,
+      onChange,
+    });
     const trigger = picker.querySelector<HTMLButtonElement>(".picker-select__trigger")!;
     await openPicker(picker);
     const group = picker.querySelector<HTMLButtonElement>(".picker-select__group-toggle")!;
@@ -60,20 +73,16 @@ describe("ModelPicker", () => {
   });
 
   it("shows a late selected model first without dropping the rest of a large catalog", async () => {
-    const { container } = mountSolid(() => (
-      <ModelPicker
-        label="Model"
-        value="fixture/model-299"
-        options={Array.from({ length: 300 }, (_, index) => ({
-          value: `fixture/model-${String(index).padStart(3, "0")}`,
-          label: `Model ${index}`,
-          provider: "fixture",
-        }))}
-        onChange={vi.fn()}
-      />
-    ));
-    await updatePickers(container);
-    await openPicker(container.querySelector("openclaw-select-picker")!);
+    const { container, picker } = await mountPicker({
+      value: "fixture/model-299",
+      options: Array.from({ length: 300 }, (_, index) => ({
+        value: `fixture/model-${String(index).padStart(3, "0")}`,
+        label: `Model ${index}`,
+        provider: "fixture",
+      })),
+      onChange: vi.fn(),
+    });
+    await openPicker(picker);
     const rows = Array.from(container.querySelectorAll('[role="option"][data-value]'));
     expect(rows).toHaveLength(300);
     expect(rows.slice(0, 3).map((row) => row.getAttribute("data-value"))).toEqual([
@@ -84,25 +93,19 @@ describe("ModelPicker", () => {
   });
 
   it("renders provider details and caller sentinels while preserving an unknown current model", async () => {
-    const { container } = mountSolid(() => (
-      <ModelPicker
-        label="Model"
-        value="legacy/model"
-        options={[
-          { value: "", label: "Automatic" },
-          {
-            value: "openai/fixture-alpha",
-            label: "Fixture Alpha",
-            provider: "openai",
-            detail: "Fast · 128k",
-            disabled: true,
-          },
-        ]}
-        onChange={vi.fn()}
-      />
-    ));
-    await updatePickers(container);
-    await openPicker(container.querySelector("openclaw-select-picker")!);
+    const { container, picker } = await mountPicker({
+      value: "legacy/model",
+      options: [
+        { value: "", label: "Automatic" },
+        {
+          ...fixtureOption("Alpha"),
+          detail: "Fast · 128k",
+          disabled: true,
+        },
+      ],
+      onChange: vi.fn(),
+    });
+    await openPicker(picker);
 
     expect(
       container.querySelector('[role="option"][data-value=""] .picker-select__leading'),
@@ -118,25 +121,17 @@ describe("ModelPicker", () => {
 
   it("reveals free-form entry without leaking its internal option value", async () => {
     const onChange = vi.fn();
-    const { container } = mountSolid(() => (
-      <ModelPicker
-        label="Model"
-        value="openai/fixture-alpha"
-        options={[
-          { value: "", label: "Default" },
-          { value: "openai/fixture-alpha", label: "Fixture Alpha", provider: "openai" },
-        ]}
-        custom={{ label: "Custom model…", placeholder: "provider/model" }}
-        onChange={onChange}
-      />
-    ));
-    await updatePickers(container);
-    await openPicker(container.querySelector("openclaw-select-picker")!);
+    const { container, picker } = await mountPicker({
+      value: "openai/fixture-alpha",
+      options: [{ value: "", label: "Default" }, fixtureOption("Alpha")],
+      custom: { label: "Custom model…", placeholder: "provider/model" },
+      onChange,
+    });
+    await openPicker(picker);
 
     const customOption = Array.from(container.querySelectorAll('[role="option"]')).find(
       (option) => option.textContent?.trim() === "Custom model…",
     );
-    const picker = container.querySelector<SelectPicker>("openclaw-select-picker")!;
     const input = container.querySelector<HTMLInputElement>("input")!;
     expect(customOption).not.toBeNull();
     expect(input?.hidden).toBe(true);
@@ -151,33 +146,18 @@ describe("ModelPicker", () => {
 
   it("does not show a raw model reference when a model option receives pointer hover", async () => {
     const onChange = vi.fn();
-    const { container: host, unmount } = mountSolid(() => (
-      <ModelPicker
-        label="Model"
-        value="openai/fixture-alpha"
-        showSelectedDetail
-        options={[
-          { value: "", label: "Select a model", disabled: true },
-          {
-            value: "openai/fixture-alpha",
-            label: "Fixture Alpha",
-            provider: "openai",
-            detail: "API",
-          },
-          {
-            value: "openai/fixture-beta",
-            label: "Fixture Beta",
-            provider: "openai",
-            detail: "API",
-          },
-        ]}
-        onChange={onChange}
-      />
-    ));
+    const { picker, unmount } = await mountPicker({
+      value: "openai/fixture-alpha",
+      showSelectedDetail: true,
+      options: [
+        { value: "", label: "Select a model", disabled: true },
+        fixtureOption("Alpha", "API"),
+        fixtureOption("Beta", "API"),
+      ],
+      onChange,
+    });
     const dispose = installTitleTooltips(document);
     try {
-      await updatePickers(host);
-      const picker = host.querySelector<SelectPicker>("openclaw-select-picker")!;
       await openPicker(picker);
       const row = picker.querySelector<HTMLElement>(
         '[role="option"][data-value="openai/fixture-beta"]',
