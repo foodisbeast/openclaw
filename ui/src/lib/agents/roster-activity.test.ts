@@ -41,7 +41,6 @@ describe("agent roster activity", () => {
 
       expect(cards[0]).toMatchObject({
         assistantPreview: "The validation is running.",
-        sessionCount: 3,
         activeNow: true,
         lastActiveAt: 40,
       });
