@@ -116,6 +116,14 @@ it("exposes activity navigation while presence is offline", () => {
   expect(card("status")?.textContent).toContain("Offline");
   expect(card("facts")).toBeNull();
   const link = getQueriesForElement(container).getByRole("link", { name: "View activity" });
+  const modifiedClick = new MouseEvent("click", {
+    bubbles: true,
+    cancelable: true,
+    metaKey: true,
+  });
+  link.dispatchEvent(modifiedClick);
+  expect(modifiedClick.defaultPrevented).toBe(false);
+  expect(navigate).not.toHaveBeenCalled();
   link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   expect(navigate).toHaveBeenCalledWith("alice", "Alice");
 });

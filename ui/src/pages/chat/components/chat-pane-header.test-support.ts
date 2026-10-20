@@ -1,4 +1,4 @@
-import { createComponent, createSignal, flush, merge, type Component } from "solid-js";
+import { createComponent, createSignal, flush, merge } from "solid-js";
 import { expect, onTestFinished, vi } from "vitest";
 import type { GatewaySessionRow } from "../../../api/types.ts";
 import { EMPTY_SESSION_MENU_DATA } from "../../../components/session-menu-actions.ts";
@@ -44,39 +44,23 @@ export function chatPaneHeaderSessionMenu(): NonNullable<ChatPaneHeaderProps["se
 
 const mountedHeaders = new WeakMap<HTMLElement, (value: ChatPaneHeaderPresentation) => void>();
 
-function mountUpdating<T extends object>(
-  component: Component<T>,
-  initial: T,
-  container: HTMLElement,
-) {
-  const [current, setCurrent] = createSignal(initial);
-  const render = () => createComponent(component, merge(current));
-  const mounted = mountSolid(render, { container });
-  return {
-    container,
-    unmount: mounted.unmount,
-    get props() {
-      return current();
-    },
-    replace(value: T) {
-      setCurrent(() => value);
-      flush();
-    },
-    update(this: void, changes: Partial<T>) {
-      setCurrent(() => ({ ...current(), ...changes }));
-      flush();
-    },
-  };
-}
-
 export function renderPaneHeaderInto(value: ChatPaneHeaderPresentation, container: HTMLElement) {
   const update = mountedHeaders.get(container);
   if (update) {
     update(value);
+    flush();
     return;
   }
-  const mounted = mountUpdating(PaneHeaderView, value, container);
-  mountedHeaders.set(container, mounted.replace);
+  const [current, setCurrent] = createSignal(value);
+  const mounted = mountSolid(
+    () =>
+      createComponent(
+        PaneHeaderView,
+        merge(() => current()),
+      ),
+    { container },
+  );
+  mountedHeaders.set(container, setCurrent);
   onTestFinished(() => {
     mountedHeaders.delete(container);
     mounted.unmount();
@@ -88,6 +72,7 @@ export function chatPaneHeaderSharing(
 ): ChatSessionSharingProps {
   return {
     session: chatPaneHeaderSessionRow({ visibility: "shared", sharingRole: "owner" }),
+    state: undefined,
     onOpen: vi.fn(),
     onVisibilityChange: vi.fn(),
     onMemberChange: vi.fn(),
@@ -128,6 +113,10 @@ export function chatPaneHeaderSessionRow(
   return { key: "agent:main:test", kind: "direct", updatedAt: 0, ...patch };
 }
 
+/**
+ * Mounts a retained native header with complete props and test-scoped disposal.
+ * `containers` lets callers keep their existing DOM cleanup.
+ */
 export function mountChatPaneHeader(
   containers: HTMLElement[],
   patch: Partial<ChatPaneHeaderProps> = {},
@@ -155,6 +144,7 @@ export function mountChatPaneHeader(
     platform: "darwin",
     canReveal: true,
     copiedAction: null,
+    renameDisabledReason: undefined,
     onBeginRename: vi.fn(),
     onRenameInput: vi.fn(),
     onCommitRename: vi.fn(),
@@ -166,15 +156,34 @@ export function mountChatPaneHeader(
     onBranchSelect: vi.fn(),
     ...patch,
   };
-  const mounted = mountUpdating(ChatPaneHeader, props, container);
+  const [current, setCurrent] = createSignal(props);
+  const mounted = mountSolid(
+    () =>
+      createComponent(
+        ChatPaneHeader,
+        merge(() => current()),
+      ),
+    { container },
+  );
   onTestFinished(mounted.unmount);
-  return mounted;
+  return {
+    container,
+    get props() {
+      return current();
+    },
+    unmount: mounted.unmount,
+    update(this: void, changes: Partial<ChatPaneHeaderProps>) {
+      setCurrent({ ...current(), ...changes });
+      flush();
+    },
+  };
 }
 
 export function mockWorkspaceIconFetch() {
   const workspaceFetch = vi.fn<typeof fetch>();
   vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
-    // Other header asset requests must not consume workspace retry responses.
+    // Other header elements fetch assets asynchronously. They must not consume
+    // workspace retry responses or count as authenticated icon requests.
     if (typeof input === "string" && input.startsWith("/__openclaw__/workspace-icon/")) {
       return workspaceFetch(input, init);
     }

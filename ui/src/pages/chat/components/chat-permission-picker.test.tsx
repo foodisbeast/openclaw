@@ -7,79 +7,46 @@ import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { focusChatComposerFromPrintableKeydown } from "../chat-pane-shared.ts";
 import { ChatPermissionPicker, type ChatPermissionPickerProps } from "./chat-permission-picker.tsx";
 
-function key(target: EventTarget, value: string) {
-  target.dispatchEvent(
-    new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true }),
-  );
-}
-
-const option = (container: HTMLElement, mode: string) =>
-  container.querySelector<HTMLElement>(`[data-chat-permission-option="${mode}"]`);
-const menuOpen = (menu: HTMLElement) =>
-  waitForSolid(() => expect(menu.matches(":popover-open")).toBe(true));
-
-function picker(options: ChatPermissionPickerProps) {
-  const [props, setProps] = createSignal(options);
-  const { container } = mountSolid(() => <ChatPermissionPicker {...props()} />);
-  flush();
-  return {
-    container,
-    trigger: container.querySelector<HTMLButtonElement>("[data-chat-permission-select]")!,
-    menu: container.querySelector<HTMLElement>('[role="menu"]')!,
-    update(changes: Partial<ChatPermissionPickerProps>) {
-      setProps({ ...props(), ...changes });
-      flush();
-    },
-  };
-}
-
-it("keeps locked modes unavailable, routes shortcuts, and returns ordinary typing to the composer", async () => {
+it("keeps locked modes unavailable and selects enabled numeric shortcuts with return focus", async () => {
   const onSelect = vi.fn();
   const canSelectFull = vi.fn(() => false);
-  const { container, trigger, menu } = picker({
+  const options: ChatPermissionPickerProps = {
     get canSelectFull() {
       return canSelectFull();
     },
     mode: "guarded",
     onSelect,
-  });
+  };
+  const { container } = mountSolid(() => <ChatPermissionPicker {...options} />);
+  flush();
   expect(canSelectFull).not.toHaveBeenCalled();
-  container.insertAdjacentHTML(
-    "afterbegin",
-    '<div class="agent-chat__composer-combobox"><textarea></textarea></div>',
-  );
-  const composer = container.querySelector("textarea")!;
-  const redirect = (event: KeyboardEvent) =>
-    focusChatComposerFromPrintableKeydown(container, event, composer);
-  composer.focus();
+  const trigger = container.querySelector<HTMLButtonElement>("[data-chat-permission-select]")!;
+  trigger.focus();
   trigger.dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true, cancelable: true }));
-  await menuOpen(menu);
+  const menu = container.querySelector<HTMLElement>('[role="menu"]')!;
+  await waitForSolid(() => expect(menu.matches(":popover-open")).toBe(true));
   expect(document.activeElement).toBe(trigger);
-  expect(option(container, "full")?.matches(":disabled")).toBe(true);
-  key(menu, "5");
+  expect(
+    container.querySelector('[data-chat-permission-option="full"]')?.matches(":disabled"),
+  ).toBe(true);
+  menu.dispatchEvent(new KeyboardEvent("keydown", { key: "5", bubbles: true, cancelable: true }));
   expect(onSelect).not.toHaveBeenCalled();
   expect(menu.matches(":popover-open")).toBe(true);
-  key(menu, "4");
+  menu.dispatchEvent(new KeyboardEvent("keydown", { key: "4", bubbles: true, cancelable: true }));
   expect(onSelect).toHaveBeenCalledExactlyOnceWith("workspace");
   expect(document.activeElement).toBe(trigger);
-  document.addEventListener("keydown", redirect, true);
-  onTestFinished(() => document.removeEventListener("keydown", redirect, true));
-  trigger.click();
-  await menuOpen(menu);
-  key(trigger, "4");
-  expect(onSelect.mock.calls).toEqual([["workspace"], ["workspace"]]);
-  expect(document.activeElement).toBe(trigger);
-  trigger.click();
-  await menuOpen(menu);
-  key(document.activeElement!, "q");
-  expect(document.activeElement).toBe(composer);
-  expect(onSelect).toHaveBeenCalledTimes(2);
 });
 
 it("includes the documentation link in keyboard menu navigation", async () => {
-  const { container, trigger } = picker({ canSelectFull: false, onSelect: vi.fn() });
+  const { container } = mountSolid(() => (
+    <ChatPermissionPicker canSelectFull={false} onSelect={() => {}} />
+  ));
+  flush();
+  const trigger = container.querySelector<HTMLButtonElement>("[data-chat-permission-select]")!;
   trigger.focus();
-  key(trigger, "ArrowDown");
+  trigger.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+  );
   await waitForSolid(() =>
     expect(container.querySelector(".chat-controls__permission-learn-more")).not.toBeNull(),
   );
@@ -87,33 +54,92 @@ it("includes the documentation link in keyboard menu navigation", async () => {
   await waitForSolid(() => expect(document.activeElement).toBe(link));
   expect(link.getAttribute("href")).toBe("https://docs.openclaw.ai/gateway/permission-modes");
   expect(link.target).toBe("_blank");
-  key(link, "ArrowDown");
-  await waitForSolid(() => expect(document.activeElement).toBe(option(container, "default")));
-  key(document.activeElement!, "Home");
+  link.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+  );
+  await waitForSolid(() =>
+    expect(document.activeElement).toBe(
+      container.querySelector('[data-chat-permission-option="default"]'),
+    ),
+  );
+  document.activeElement?.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true }),
+  );
   await waitForSolid(() => expect(document.activeElement).toBe(link));
 });
 
-it("preserves option content on unrelated refreshes while admitting permission changes", async () => {
-  const { container, trigger, update } = picker({ canSelectFull: false, onSelect: vi.fn() });
+it("keeps declared shortcuts in the menu and forwards ordinary typing to the composer", async () => {
+  const onSelect = vi.fn();
+  const { container } = mountSolid(() => (
+    <>
+      <div class="agent-chat__composer-combobox">
+        <textarea />
+      </div>
+      <ChatPermissionPicker canSelectFull={false} mode="guarded" onSelect={onSelect} />
+    </>
+  ));
+  flush();
+  const composer = container.querySelector("textarea")!;
+  const redirect = (event: KeyboardEvent) =>
+    focusChatComposerFromPrintableKeydown(container, event, composer);
+  document.addEventListener("keydown", redirect, true);
+  onTestFinished(() => document.removeEventListener("keydown", redirect, true));
+  const trigger = container.querySelector<HTMLButtonElement>("[data-chat-permission-select]")!;
+  const menu = container.querySelector<HTMLElement>('[role="menu"]')!;
+  container.querySelector("textarea")!.focus();
+  trigger.dispatchEvent(new MouseEvent("click", { detail: 1, bubbles: true, cancelable: true }));
+  await waitForSolid(() => expect(menu.matches(":popover-open")).toBe(true));
+  expect(document.activeElement).toBe(trigger);
+  trigger.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "4", bubbles: true, cancelable: true }),
+  );
+  expect(onSelect).toHaveBeenCalledExactlyOnceWith("workspace");
+  expect(document.activeElement).toBe(trigger);
   trigger.click();
+  await waitForSolid(() => expect(menu.matches(":popover-open")).toBe(true));
+  document.activeElement?.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "q", bubbles: true, cancelable: true }),
+  );
+  expect(document.activeElement).toBe(container.querySelector("textarea"));
+  expect(onSelect).toHaveBeenCalledTimes(1);
+});
+
+it("preserves option content on unrelated refreshes while admitting permission changes", async () => {
+  const options: ChatPermissionPickerProps = { canSelectFull: false, onSelect: vi.fn() };
+  const [props, setProps] = createSignal(options);
+  const { container } = mountSolid(() => <ChatPermissionPicker {...props()} />);
+  flush();
+  container.querySelector<HTMLButtonElement>("[data-chat-permission-select]")!.click();
   await waitForSolid(() =>
     expect(container.querySelector('[role="menu"]')?.matches(":popover-open")).toBe(true),
   );
-  const row = option(container, "default")!;
+  const row = container.querySelector<HTMLElement>('[data-chat-permission-option="default"]')!;
   const content = row.querySelector(".chat-controls__permission-option-copy");
   const icon = row.querySelector(".chat-controls__permission-option-icon");
   const observer = new MutationObserver(() => {});
   observer.observe(container, { childList: true, subtree: true });
   onTestFinished(() => observer.disconnect());
 
-  update({ disabledReason: "Unrelated connection notice" });
+  options.disabledReason = "Unrelated connection notice";
+  setProps({ ...options });
+  flush();
   expect(observer.takeRecords()).toHaveLength(0);
   expect(row.querySelector(".chat-controls__permission-option-copy")).toBe(content);
   expect(row.querySelector(".chat-controls__permission-option-icon")).toBe(icon);
 
-  update({ defaultMode: "guarded", mode: "workspace", canSelectFull: true });
-  expect(option(container, "default")).toBe(row);
+  options.defaultMode = "guarded";
+  options.mode = "workspace";
+  options.canSelectFull = true;
+  setProps({ ...options });
+  flush();
+  expect(container.querySelector('[data-chat-permission-option="default"]')).toBe(row);
   expect(row.textContent).toContain("Default (Guarded)");
-  expect(option(container, "workspace")?.getAttribute("aria-checked")).toBe("true");
-  expect(option(container, "full")?.matches(":disabled")).toBe(false);
+  expect(
+    container
+      .querySelector('[data-chat-permission-option="workspace"]')
+      ?.getAttribute("aria-checked"),
+  ).toBe("true");
+  expect(
+    container.querySelector('[data-chat-permission-option="full"]')?.matches(":disabled"),
+  ).toBe(false);
 });

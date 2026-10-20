@@ -27,20 +27,6 @@ vi.mock("../projects/project-clone.js", async (importOriginal) => {
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const { createSessionStoreDir } = setupGatewaySessionsHandlerTestHarness();
-const repository = { url: "git@github.com:OpenClaw/OpenClaw.git", ref: "release/next" };
-const create = (
-  params: Record<string, unknown> = {},
-  options: Parameters<typeof directSessionReq>[2] = controlUiClient,
-) =>
-  directSessionReq<{ key: string; entry: { repositoryWorkspaceId: string } }>(
-    "sessions.create",
-    { agentId: "main", repository, ...params },
-    options,
-  );
-function expectNoDispatch() {
-  expect(projectCloneMocks.materialize).not.toHaveBeenCalled();
-  expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
-}
 
 afterEach(async () => {
   await disposeSessionReadContexts();
@@ -56,7 +42,11 @@ test("sessions.create retains a cloud repository across replay without creating 
   const workspace = path.join(root, "must-not-be-created");
   testState.agentConfig = { workspace };
   const { storePath } = await createSessionStoreDir();
-  const created = await create();
+  const repository = { url: "git@github.com:OpenClaw/OpenClaw.git", ref: "release/next" };
+  const created = await directSessionReq<{
+    key: string;
+    entry: { repositoryWorkspaceId: string };
+  }>("sessions.create", { agentId: "main", repository }, controlUiClient);
   expect(created.ok, JSON.stringify(created.error)).toBe(true);
   const { key, entry } = created.payload!;
   expect(entry.repositoryWorkspaceId).toEqual(expect.any(String));
@@ -78,11 +68,19 @@ test("sessions.create retains a cloud repository across replay without creating 
   await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
   const replayOptions = { ...controlUiClient, context: {} };
-  const replay = await create({ key }, replayOptions);
+  const replay = await directSessionReq<{ entry: { repositoryWorkspaceId: string } }>(
+    "sessions.create",
+    { agentId: "main", key, repository },
+    replayOptions,
+  );
   expect(replay.ok, JSON.stringify(replay.error)).toBe(true);
   expect(replay.payload?.entry.repositoryWorkspaceId).toBe(entry.repositoryWorkspaceId);
   const listed = await directSessionReq<{
-    sessions: Array<{ key: string }>;
+    sessions: Array<{
+      key: string;
+      repositoryWorkspaceId?: string;
+      repository?: { url: string; ref?: string; branch: string };
+    }>;
   }>("sessions.list", { agentId: "main", limit: 100 }, replayOptions);
   expect(listed.ok, JSON.stringify(listed.error)).toBe(true);
   expect(listed.payload?.sessions.find((row) => row.key === key)).toMatchObject({
@@ -130,18 +128,20 @@ test("sessions.create retains a cloud repository across replay without creating 
       const cacheLifetime = new AbortController();
       onTestFinished(() => cacheLifetime.abort());
       const params = { sessionKey: key, agentId: "main" };
-      const loadPullRequests = (resolveGitRoot?: () => Promise<string>) =>
-        loadControlUiSessionPullRequests(params, {
-          cacheSignal: cacheLifetime.signal,
-          resolveGitRoot,
-        });
-      await loadPullRequests();
+      await loadControlUiSessionPullRequests(params, {
+        cacheSignal: cacheLifetime.signal,
+      });
       const repositoryPins = getEventListeners(cacheLifetime.signal, "abort").length;
       expect(repositoryPins).toBeGreaterThan(0);
-      await loadPullRequests(async () => workspace);
+      await loadControlUiSessionPullRequests(params, {
+        cacheSignal: cacheLifetime.signal,
+        resolveGitRoot: async () => workspace,
+      });
       expect(getEventListeners(cacheLifetime.signal, "abort")).toHaveLength(repositoryPins);
       gitRead.mockClear();
-      const preview = await loadPullRequests();
+      const preview = await loadControlUiSessionPullRequests(params, {
+        cacheSignal: cacheLifetime.signal,
+      });
       expect(getEventListeners(cacheLifetime.signal, "abort")).toHaveLength(repositoryPins);
       expect(preview.branch, JSON.stringify(preview)).toMatchObject({
         owner: "openclaw",
@@ -159,11 +159,16 @@ test("sessions.create retains a cloud repository across replay without creating 
     { ...repository, ref: "main" },
     { url: "https://github.com/octocat/hello-world.git" },
   ]) {
-    const changed = await create({ key, repository: changedSource });
+    const changed = await directSessionReq(
+      "sessions.create",
+      { agentId: "main", key, ...(changedSource ? { repository: changedSource } : {}) },
+      controlUiClient,
+    );
     expect(changed).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
   }
   expect(await fs.stat(workspace).catch(() => undefined)).toBeUndefined();
-  expectNoDispatch();
+  expect(projectCloneMocks.materialize).not.toHaveBeenCalled();
+  expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
 });
 
 test.each([
@@ -177,11 +182,17 @@ test.each([
   "sessions.create rejects conflicting cloud repository input before admission: %j",
   async (options) => {
     await createSessionStoreDir();
-    const created = await create({
-      repository: { url: "https://github.com/openclaw/openclaw.git" },
-      ...options,
-    });
+    const created = await directSessionReq(
+      "sessions.create",
+      {
+        agentId: "main",
+        repository: { url: "https://github.com/openclaw/openclaw.git" },
+        ...options,
+      },
+      controlUiClient,
+    );
     expect(created).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
-    expectNoDispatch();
+    expect(projectCloneMocks.materialize).not.toHaveBeenCalled();
+    expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
   },
 );

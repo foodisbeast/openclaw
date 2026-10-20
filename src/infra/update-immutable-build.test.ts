@@ -26,7 +26,9 @@ vi.mock("./update-immutable-service.js", async (importOriginal) => ({
 }));
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
-beforeEach(() => mocks.command.mockReset());
+beforeEach(() => {
+  mocks.command.mockReset();
+});
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
