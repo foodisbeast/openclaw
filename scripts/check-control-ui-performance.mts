@@ -33,6 +33,10 @@ const CONTROL_UI_CSS_GZIP_GROWTH_BYTES = 1.5 * KIB;
 // a diagram is viewed. Keep its size visible without relaxing ordinary chunks.
 const MERMAID_RENDERER_ASSET = /^assets\/mermaid\.min-[\w-]+\.js$/u;
 const MERMAID_RENDERER_GZIP_BYTES = 960 * KIB;
+// The CSP-safe decoder loads only after HEIC intake, inside its own worker.
+// Keep its approved cost bounded without raising the ordinary JavaScript cap.
+const HEIC_WORKER_ASSET = /^assets\/chat-attachment-heic\.worker-[\w-]+\.js$/u;
+const HEIC_WORKER_GZIP_BYTES = 768 * KIB;
 // Locale catalogs are named Vite chunks loaded only after a language selection.
 // Keep one combined cap for base and on-demand config hints in every locale.
 const CONTROL_UI_LOCALE_ASSET_PATTERNS = CONTROL_UI_LOCALE_ENTRIES.flatMap(({ locale }) => [
@@ -200,12 +204,15 @@ export function collectControlUiPerformanceMetrics(distDir: string) {
     : null;
   const jsAssets = assets.filter((asset) => asset.type === "js");
   const mermaidRenderer = jsAssets.filter((asset) => MERMAID_RENDERER_ASSET.test(asset.file));
+  const heicWorker = jsAssets.filter((asset) => HEIC_WORKER_ASSET.test(asset.file));
   const localeCatalogs = jsAssets.filter(
     (asset) => controlUiLocaleAssetIdentity(asset.file) !== null,
   );
   const ordinaryJsAssets = jsAssets.filter(
     (asset) =>
-      !MERMAID_RENDERER_ASSET.test(asset.file) && controlUiLocaleAssetIdentity(asset.file) === null,
+      !MERMAID_RENDERER_ASSET.test(asset.file) &&
+      !HEIC_WORKER_ASSET.test(asset.file) &&
+      controlUiLocaleAssetIdentity(asset.file) === null,
   );
   const cssAssets = assets.filter((asset) => asset.type === "css");
   if (ordinaryJsAssets.length === 0 || cssAssets.length === 0 || startup.assets.length === 0) {
@@ -224,6 +231,7 @@ export function collectControlUiPerformanceMetrics(distDir: string) {
       css: largestAsset(cssAssets),
     },
     mermaidRenderer,
+    heicWorker,
     localeCatalogs,
   };
 }
@@ -265,6 +273,19 @@ export function evaluateControlUiPerformanceBudgets(
     [
       "startup Mermaid JS assets",
       [...startupAssetFiles].filter((file) => MERMAID_RENDERER_ASSET.test(file)).length,
+      0,
+      "count",
+    ],
+    ["isolated HEIC worker JS assets", metrics.heicWorker.length, 1, "count"],
+    [
+      "isolated HEIC worker JS gzip",
+      summarizeAssets(metrics.heicWorker).gzipBytes,
+      HEIC_WORKER_GZIP_BYTES,
+      "bytes",
+    ],
+    [
+      "startup HEIC worker JS assets",
+      [...startupAssetFiles].filter((file) => HEIC_WORKER_ASSET.test(file)).length,
       0,
       "count",
     ],
@@ -494,6 +515,11 @@ export function formatControlUiPerformanceReport(
   if (metrics.mermaidRenderer.length > 0) {
     lines.push(
       `  isolated Mermaid JS: ${formatAssetSummary(summarizeAssets(metrics.mermaidRenderer))} (limits: 1 deferred asset, ${formatControlUiPerformanceBytes(MERMAID_RENDERER_GZIP_BYTES)} gzip; forbidden at startup)`,
+    );
+  }
+  if (metrics.heicWorker.length > 0) {
+    lines.push(
+      `  isolated HEIC worker JS: ${formatAssetSummary(summarizeAssets(metrics.heicWorker))} (limits: 1 deferred asset, ${formatControlUiPerformanceBytes(HEIC_WORKER_GZIP_BYTES)} gzip; forbidden at startup)`,
     );
   }
   if (metrics.localeCatalogs.length > 0) {
@@ -737,6 +763,9 @@ function main(argv: string[] = process.argv.slice(2)): void {
       "new boot JS gzip",
       "isolated Mermaid JS assets",
       "startup Mermaid JS assets",
+      "isolated HEIC worker JS assets",
+      "isolated HEIC worker JS gzip",
+      "startup HEIC worker JS assets",
       "locale catalog base JS assets per locale",
       "locale config-hint JS assets per locale",
       "largest locale catalog pair JS gzip",

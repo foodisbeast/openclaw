@@ -301,6 +301,52 @@ describe("Control UI performance budgets", () => {
     expect(formatReport(metrics)).toContain("isolated Mermaid JS:");
   });
 
+  it("admits only one capped HEIC decoder outside every startup path", () => {
+    const fixture = createCliFixture();
+    const assetsDir = path.join(fixture.distDir, "assets");
+    const decoder = "chat-attachment-heic.worker-a.js";
+    const actions = { GITHUB_ACTIONS: "true" };
+    writeAssetAt(assetsDir, decoder, 3_200_000, 768 * 1024, 600_000);
+    const passing = jsonCli(fixture, [], 0, actions);
+    expect(passing.violations).toEqual([]);
+    expect(passing.metrics.total.js.gzipBytes).toBe(786_497);
+    expect(passing.report).toContain("isolated HEIC worker JS:");
+
+    fs.appendFileSync(path.join(assetsDir, `${decoder}.gz`), "x");
+    expect(jsonCli(fixture, [], 1, actions).violations).toEqual([
+      { metric: "isolated HEIC worker JS gzip", actual: 786_433, limit: 786_432, unit: "bytes" },
+    ]);
+
+    writeAssetAt(assetsDir, decoder, 200_000, 100_000, 80_000);
+    const duplicate = "chat-attachment-heic.worker-b.js";
+    writeAssetAt(assetsDir, duplicate, 200_000, 100_000, 80_000);
+    expect(jsonCli(fixture, [], 1, actions).violations).toEqual([
+      { metric: "isolated HEIC worker JS assets", actual: 2, limit: 1, unit: "count" },
+    ]);
+    for (const suffix of ["", ".gz", ".br"]) {
+      fs.unlinkSync(path.join(assetsDir, `${duplicate}${suffix}`));
+    }
+
+    const indexPath = path.join(fixture.distDir, "index.html");
+    fs.writeFileSync(fixture.baselinePath, JSON.stringify(startupBaseline(100_065)));
+    for (const extra of [
+      preload(decoder),
+      routeTemplate("chat", [preload(decoder)]),
+      routeTemplate("new", [preload(decoder)]),
+    ]) {
+      fs.writeFileSync(indexPath, startupHtml + extra);
+      expect(jsonCli(fixture, [], 1, actions).violations).toEqual([
+        { metric: "startup HEIC worker JS assets", actual: 1, limit: 0, unit: "count" },
+      ]);
+    }
+
+    fs.writeFileSync(indexPath, startupHtml);
+    writeAssetAt(assetsDir, "chat-attachment-heic-extra.js", 300_000, 215 * 1024 + 1, 100);
+    expect(jsonCli(fixture, [], 0, actions).violations).toEqual([
+      { metric: "largest JS gzip", actual: 220_161, limit: 220_160, unit: "bytes" },
+    ]);
+  });
+
   it("retains the ordinary chunk cap beside locale pairs", () => {
     const { distDir, writeAsset } = createStartupFixture();
     writeAsset("lazy-b.js", 200, 215 * 1024 + 1, 55);
