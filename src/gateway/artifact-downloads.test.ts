@@ -32,6 +32,19 @@ import {
 
 afterEach(clearArtifactDownloads);
 
+const solidPng = (width: number, height: number, a = 255) =>
+  createSolidPngBuffer(width, height, { r: 24, g: 64, b: 128, a });
+async function jpeg(source: Buffer, quality?: number) {
+  return (await createImageProcessor().encode(source, { format: "jpeg", quality })).data;
+}
+async function expectWebp(bytes: Uint8Array, width: number, height: number) {
+  expect(await createImageProcessor().probe(bytes)).toMatchObject({
+    format: "webp",
+    width,
+    height,
+  });
+}
+
 function createResponse() {
   const res = new ServerResponse(createRequest({ path: "/" }));
   return {
@@ -64,6 +77,9 @@ function artifactFrom(source: Buffer, overrides: Partial<ArtifactRecord> = {}): 
     ...overrides,
   };
 }
+
+const fileArtifact = (text: string) =>
+  artifactFrom(Buffer.from(text), { type: "file", mimeType: "text/plain" });
 
 function grantFor(
   client: GatewayClient,
@@ -122,7 +138,7 @@ function apngWithLargeMetadata(): Buffer {
 }
 
 function corruptPng() {
-  const source = createSolidPngBuffer(1600, 800, { r: 24, g: 64, b: 128 });
+  const source = solidPng(1600, 800);
   const start = source.indexOf("IDAT") + 4;
   source.fill(0, start, start + source.readUInt32BE(start - 8));
   return source;
@@ -134,11 +150,7 @@ it.each(["source", "connection", "expiry"] as const)(
     using clock = vi.spyOn(Date, "now").mockReturnValue(1000);
     const controller = new AbortController();
     const client = createClient(controller.signal);
-    const artifact = artifactFrom(Buffer.from("captured body"), {
-      type: "file",
-      title: "captured.txt",
-      mimeType: "text/plain",
-    });
+    const artifact = fileArtifact("captured body");
     const entered = createDeferredCore();
     const release = createDeferredCore();
     let sourceCurrent = true;
@@ -183,12 +195,7 @@ it.each(["source", "connection", "expiry"] as const)(
 );
 
 it.each([
-  [
-    "image",
-    () => createSolidPngBuffer(1600, 800, { r: 24, g: 64, b: 128 }),
-    "image/png",
-    [960, 480],
-  ],
+  ["image", () => solidPng(1600, 800), "image/png", [960, 480]],
   ["large", () => createNoisyPngBuffer(600, 300), "image/png", [600, 300]],
   ["file", () => Buffer.from("original"), "text/plain", []],
   ["invalid-image", () => Buffer.from("original"), "image/png", null],
@@ -196,18 +203,7 @@ it.each([
   ["gif", () => ANIMATED_GIF_BYTES, "image/gif", null],
   ["apng", () => APNG_BYTES, "image/png", null],
   ["apng-metadata", apngWithLargeMetadata, "image/png", null],
-  [
-    "compact",
-    async () =>
-      (
-        await createImageProcessor().encode(createNoisyPngBuffer(32, 32), {
-          format: "jpeg",
-          quality: 10,
-        })
-      ).data,
-    "image/jpeg",
-    [32, 32],
-  ],
+  ["compact", () => jpeg(createNoisyPngBuffer(32, 32), 10), "image/jpeg", [32, 32]],
 ] as const)(
   "serves bounded HTTP thumbnails without falling back to original images (%s)",
   async (kind, makeSource, mimeType, dimensions) => {
@@ -256,11 +252,7 @@ it.each([
       expect.stringMatching(/^attachment;/),
     );
     if (dimensions.length) {
-      expect(await createImageProcessor().probe(bytes)).toMatchObject({
-        format: "webp",
-        width: dimensions[0],
-        height: dimensions[1],
-      });
+      await expectWebp(bytes, dimensions[0]!, dimensions[1]!);
     }
     if (kind === "image") {
       expect(bytes).not.toEqual(new Uint8Array(source));
@@ -283,7 +275,7 @@ it.each([
 it.each(["missing", "stream", "body-and-stream"] as const)(
   "refuses unavailable thumbnail bytes without opening an original stream (%s)",
   async (kind) => {
-    const source = createSolidPngBuffer(32, 16, { r: 20, g: 40, b: 60 });
+    const source = solidPng(32, 16);
     const artifact = artifactFrom(source, { title: "photo.png" });
     const stream = vi.fn(async function* () {
       yield source;
@@ -332,7 +324,7 @@ it("serves distinct fixed WebP renditions over HTTP with alpha, orientation, and
     }
   };
   try {
-    const source = createSolidPngBuffer(2400, 1200, { r: 24, g: 64, b: 128, a: 96 });
+    const source = solidPng(2400, 1200, 96);
     const url = grantImage(source);
     let defaultBytes: Buffer | undefined;
     for (const [width, ceiling] of [
@@ -346,11 +338,7 @@ it("serves distinct fixed WebP renditions over HTTP with alpha, orientation, and
       expect(response.headers.get("content-disposition")).toContain("-preview.webp");
       expect(Number(response.headers.get("content-length"))).toBe(bytes.byteLength);
       expect(bytes.byteLength).toBeLessThanOrEqual(ceiling * 1024);
-      expect(await processor.probe(bytes)).toMatchObject({
-        format: "webp",
-        width,
-        height: width / 2,
-      });
+      await expectWebp(bytes, width, width / 2);
       expect(await processor.transparency(bytes)).toMatchObject({ hasTransparentPixels: true });
       if (width === 960) {
         defaultBytes = bytes;
@@ -369,31 +357,19 @@ it("serves distinct fixed WebP renditions over HTTP with alpha, orientation, and
     const dense = await fetchImage(denseUrl + "?variant=thumbnail&width=480");
     expect(dense.response.status).toBe(200);
     expect(dense.bytes.byteLength).toBeLessThanOrEqual(96 * 1024);
-    expect(await processor.probe(dense.bytes)).toMatchObject({
-      format: "webp",
-      width: 240,
-      height: 120,
-    });
+    await expectWebp(dense.bytes, 240, 120);
 
-    const jpeg = (
-      await processor.encode(createSolidPngBuffer(32, 16, { r: 10, g: 30, b: 50 }), {
-        format: "jpeg",
-      })
-    ).data;
+    const sourceJpeg = await jpeg(solidPng(32, 16));
     const orientation = Buffer.from(
       "ffe1002245786966000049492a0008000000010012010300010000000600000000000000",
       "hex",
     );
     const orientedUrl = grantImage(
-      Buffer.concat([jpeg.subarray(0, 2), orientation, jpeg.subarray(2)]),
+      Buffer.concat([sourceJpeg.subarray(0, 2), orientation, sourceJpeg.subarray(2)]),
       "image/jpeg",
     );
     const oriented = await fetchImage(orientedUrl + "?variant=thumbnail&width=1920");
-    expect(await processor.probe(oriented.bytes)).toMatchObject({
-      format: "webp",
-      width: 16,
-      height: 32,
-    });
+    await expectWebp(oriented.bytes, 16, 32);
 
     const invalid = await fetchImage(
       grantImage(Buffer.from("not an image")) + "?variant=thumbnail&width=480",
@@ -416,13 +392,7 @@ it("releases retained sharing facts on unused expiry, eviction, and disconnect",
       { agentId: "main", sessionKey },
       { sessionId: "grant-lifetime", updatedAt: 1 },
     );
-    const prepared = prepareArtifactDownload(
-      artifactFrom(Buffer.from("hello"), {
-        type: "file",
-        title: "lifetime.txt",
-        mimeType: "text/plain",
-      }),
-    )!;
+    const prepared = prepareArtifactDownload(fileArtifact("hello"))!;
     for (const reason of ["expiry", "eviction", "disconnect", "shutdown"]) {
       for (const kind of ["bytes", "managed"]) {
         const controller = new AbortController();

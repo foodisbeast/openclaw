@@ -1,5 +1,3 @@
-// Gateway agent-command test helpers.
-// Waits for mocked agent command dispatches in async gateway tests.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { vi } from "vitest";
@@ -82,19 +80,16 @@ export async function observeGatewayRunExecution(selection?: { method: "agent"; 
       }
       return pending;
     });
-  // Best-effort participant persistence is request-owned async work, not a
-  // retained Gateway root. Observe its existing promise without changing admission.
-  const observeAsyncWork: typeof trackWork = (run) => captureEffect(trackWork(run));
-  const asyncWorkSpy = vi.spyOn(asyncWork, "trackAsyncWork").mockImplementation(observeAsyncWork);
-  const observeEffect: typeof retainWork = (run) => captureEffect(retainWork(run));
+  // Observe persistence and retained work without changing their admission or promises.
+  const asyncWorkSpy = vi
+    .spyOn(asyncWork, "trackAsyncWork")
+    .mockImplementation((run) => captureEffect(trackWork(run)));
   const effectSpy = vi
     .spyOn(admission, "runWithRetainedGatewayRootWork")
-    .mockImplementation(observeEffect);
-  const observeContinuation: typeof continueWork = (run, origin) =>
-    captureEffect(continueWork(run, origin));
+    .mockImplementation((run) => captureEffect(retainWork(run)));
   const continuationSpy = vi
     .spyOn(admission, "runWithGatewayIndependentRootWorkContinuation")
-    .mockImplementation(observeContinuation);
+    .mockImplementation((run, origin) => captureEffect(continueWork(run, origin)));
   const requestSpy = vi
     .spyOn(requestModule, "handleGatewayRequest")
     .mockImplementation((options, diagnostics) => {
@@ -159,28 +154,20 @@ export async function observeGatewayRunExecution(selection?: { method: "agent"; 
       await Promise.allSettled(observed.effects);
     }
   };
+  const settleSelected = async (runId?: string, settle = settleRequest) => {
+    for (const observed of requests) {
+      if (runId === undefined || observed.runId === runId) {
+        await settle(observed);
+      }
+    }
+  };
   return {
     // Queued custody intentionally retains effects until a later execution settles.
-    async waitForDispatch(runId: string) {
-      for (const observed of requests) {
-        if (observed.runId === runId) {
-          await settleDispatch(observed);
-        }
-      }
-    },
-    async waitForCompletion(runId?: string) {
-      for (const observed of requests) {
-        if (runId !== undefined && observed.runId !== runId) {
-          continue;
-        }
-        await settleRequest(observed);
-      }
-    },
+    waitForDispatch: (runId: string) => settleSelected(runId, settleDispatch),
+    waitForCompletion: (runId?: string) => settleSelected(runId),
     async restore() {
       try {
-        for (const observed of requests) {
-          await settleRequest(observed);
-        }
+        await settleSelected();
       } finally {
         chatSpy?.mockRestore();
         sessionWorkSpy.mockRestore();
@@ -204,12 +191,9 @@ function agentCommandCalls(): Array<[AgentCommandCall]> {
   return vi.mocked(agentCommandMock).mock.calls as unknown as Array<[AgentCommandCall]>;
 }
 
-/** Waits until the mocked `agentCommand` receives a call for a specific run id. */
 export async function waitForAgentCommandCall(runId: string): Promise<AgentCommandCall> {
   for (let elapsed = 0; elapsed <= 2_000; elapsed += 5) {
-    const call = agentCommandCalls()
-      .map((entry) => entry[0])
-      .find((entry) => entry.runId === runId);
+    const call = agentCommandCalls().find(([entry]) => entry.runId === runId)?.[0];
     if (call) {
       return call;
     }
