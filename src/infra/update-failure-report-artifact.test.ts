@@ -31,37 +31,39 @@ function admittedReport() {
   return {
     outputPath,
     revoked,
-    params,
+    readRun: params.readRun,
     revoke: () => {
       current = false;
     },
-    write: (overrides: Partial<Parameters<typeof writeUpdateRunReportArtifact>[0]> = {}) =>
-      writeUpdateRunReportArtifact({ ...params, ...overrides }),
+    write: (status: "ok" | "error" = "ok", capture = true) =>
+      writeUpdateRunReportArtifact({
+        ...params,
+        result: { ...updateResult(status), runId },
+        readRun: capture ? params.readRun : undefined,
+      }),
     read: () => fs.readFile(outputPath, "utf8"),
     entries: () => fs.readdir(path.dirname(outputPath)),
   };
 }
 
 function updateResult(status: "ok" | "error"): UpdateRunResult {
+  const steps: UpdateRunResult["steps"] = [
+    {
+      name: "doctor",
+      command: "openclaw doctor --lint",
+      cwd: "/opt/openclaw",
+      durationMs: 0,
+      exitCode: 1,
+      doctorLintFindings: [
+        { checkId: "core/config", severity: "error", message: "Invalid configuration" },
+      ],
+    },
+  ];
   return {
     status,
     mode: "unknown",
     ...(status === "error" ? { reason: "update-refused" } : {}),
-    steps:
-      status === "ok"
-        ? []
-        : [
-            {
-              name: "doctor",
-              command: "openclaw doctor --lint",
-              cwd: "/opt/openclaw",
-              durationMs: 0,
-              exitCode: 1,
-              doctorLintFindings: [
-                { checkId: "core/config", severity: "error", message: "Invalid configuration" },
-              ],
-            },
-          ],
+    steps: status === "ok" ? [] : steps,
     durationMs: 0,
   };
 }
@@ -91,13 +93,13 @@ it("rechecks original authority after waiting for the real report lock", async (
   const refused = expect(work).rejects.toBe(fixture.revoked);
   try {
     await waiting.promise;
-    expect(fixture.params.readRun).not.toHaveBeenCalled();
+    expect(fixture.readRun).not.toHaveBeenCalled();
     fixture.revoke();
   } finally {
     await holder.release();
   }
   await refused;
-  expect(fixture.params.readRun).not.toHaveBeenCalled();
+  expect(fixture.readRun).not.toHaveBeenCalled();
   expect(await fixture.entries()).toEqual([]);
 });
 
@@ -144,16 +146,7 @@ it.each(["triage", "unlock", "staging"] as const)(
     }
     // A captured report does not take the missing-history preservation branch.
     await expect(
-      fixture.write(
-        checkpoint === "staging"
-          ? { readRun: undefined }
-          : {
-              result: {
-                ...updateResult(checkpoint === "triage" ? "error" : "ok"),
-                runId: fixture.params.result.runId,
-              },
-            },
-      ),
+      fixture.write(checkpoint === "triage" ? "error" : "ok", checkpoint !== "staging"),
     ).rejects.toBe(fixture.revoked);
     if (checkpoint === "triage") {
       expect(diagnostic).toBeDefined();
@@ -171,7 +164,7 @@ it.each(["triage", "unlock", "staging"] as const)(
       expect(await fixture.entries()).toEqual([path.basename(fixture.outputPath)]);
     }
     if (checkpoint !== "staging") {
-      expect(fixture.params.readRun).toHaveBeenCalledTimes(1);
+      expect(fixture.readRun).toHaveBeenCalledTimes(1);
     }
   },
 );
@@ -231,6 +224,6 @@ it.each(["ok", "error"] as const)(
 
 it("keeps admitted reports in the selected state directory", async () => {
   const fixture = admittedReport();
-  expect(await fixture.write({ readRun: undefined })).toBe(fixture.outputPath);
+  expect(await fixture.write("ok", false)).toBe(fixture.outputPath);
   expect(await fixture.read()).toContain("Admitted update");
 });
