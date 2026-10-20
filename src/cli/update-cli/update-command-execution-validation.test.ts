@@ -243,7 +243,7 @@ export function prepareBundledPluginRuntime({ repoRoot }) {
           );
         }
         // The incumbent is observed once, so executor replacement must happen on that probe.
-        const readyAtMs = allowance === "already ready" || failure === "executor" ? 0 : 400_000;
+        const readyAtMs = allowance === "already ready" ? 0 : 400_000;
         let elapsedMs = 0;
         const epochMs = Date.now();
         vi.spyOn(performance, "now").mockImplementation(() => elapsedMs);
