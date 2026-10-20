@@ -40,26 +40,23 @@ function inspectJson(overrides: Record<string, unknown> = {}) {
 function lifecycleLease(leaseId = LEASE_ID) {
   return { leaseId, profile: PROFILE };
 }
-function providerWithRunner(runCommand: CrabboxCommandRunner, warn?: (message: string) => void) {
-  return createProvider({ runCommand, warn });
-}
 function heartbeatFixture(run: CrabboxCommandRunner) {
   vi.useFakeTimers();
   const heartbeat = vi.fn(run);
   const warnings: string[] = [];
-  const provider = providerWithRunner(
-    async (argv, options) =>
+  const provider = createProvider({
+    runCommand: async (argv, options) =>
       argv[1] === "heartbeat"
         ? heartbeat(argv, options)
         : commandResult({ stdout: argv[1] === "inspect" ? inspectJson() : "" }),
-    (message) => warnings.push(message),
-  );
+    warn: (message) => warnings.push(message),
+  });
   return { provider, heartbeat, warnings };
 }
 describe("Crabbox heartbeat lifecycle", () => {
   it("rejects non-Crabbox lifecycle lease ids before invoking the CLI", async () => {
     const runCommand = vi.fn<CrabboxCommandRunner>();
-    const provider = providerWithRunner(runCommand);
+    const provider = createProvider({ runCommand });
     const lease = lifecycleLease("lease:not-crabbox");
 
     await expect(provider.inspect(lease)).rejects.toThrow("lease id is invalid");
@@ -79,48 +76,42 @@ describe("Crabbox heartbeat lifecycle", () => {
         stderr: "Lease policy clamped idle timeout.",
       });
     });
-    try {
-      await provider.inspect(lifecycleLease());
-      await vi.advanceTimersByTimeAsync(0);
-      expect(heartbeat).toHaveBeenCalledTimes(1);
-      expect(warnings).toEqual([
-        `Crabbox worker lease ${LEASE_ID}: Lease policy clamped idle timeout.`,
-      ]);
-      await vi.advanceTimersByTimeAsync(2999);
-      expect(heartbeat).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(heartbeat).toHaveBeenCalledTimes(2);
-      expect(heartbeat.mock.calls[1]?.[1].timeoutMs).toBe(3000);
-      await vi.advanceTimersByTimeAsync(1500);
-      expect(heartbeat).toHaveBeenCalledTimes(3);
-      expect(warnings).toHaveLength(1);
-    } finally {
-      await provider.destroy(lifecycleLease());
-      vi.useRealTimers();
-    }
+    await provider.inspect(lifecycleLease());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(heartbeat).toHaveBeenCalledTimes(1);
+    expect(warnings).toEqual([
+      `Crabbox worker lease ${LEASE_ID}: Lease policy clamped idle timeout.`,
+    ]);
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(heartbeat).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(heartbeat).toHaveBeenCalledTimes(2);
+    expect(heartbeat.mock.calls[1]?.[1].timeoutMs).toBe(3000);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(heartbeat).toHaveBeenCalledTimes(3);
+    expect(warnings).toHaveLength(1);
+    await provider.destroy(lifecycleLease());
   });
 
   it("re-arms a pending heartbeat when inspection shortens the idle window", async () => {
     vi.useFakeTimers();
     let idleTimeout = "60m";
     const heartbeat = vi.fn();
-    const provider = providerWithRunner(async (argv) => {
-      if (argv[1] === "heartbeat") {
-        heartbeat();
-      }
-      return commandResult({ stdout: argv[1] === "inspect" ? inspectJson({ idleTimeout }) : "" });
+    const provider = createProvider({
+      runCommand: async (argv) => {
+        if (argv[1] === "heartbeat") {
+          heartbeat();
+        }
+        return commandResult({ stdout: argv[1] === "inspect" ? inspectJson({ idleTimeout }) : "" });
+      },
     });
-    try {
-      await provider.inspect(lifecycleLease());
-      await vi.advanceTimersByTimeAsync(0);
-      expect(heartbeat).toHaveBeenCalledTimes(1);
-      idleTimeout = "6s";
-      await provider.inspect(lifecycleLease());
-      await vi.advanceTimersByTimeAsync(3000);
-      expect(heartbeat).toHaveBeenCalledTimes(2);
-    } finally {
-      await provider.destroy(lifecycleLease());
-      vi.useRealTimers();
-    }
+    await provider.inspect(lifecycleLease());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(heartbeat).toHaveBeenCalledTimes(1);
+    idleTimeout = "6s";
+    await provider.inspect(lifecycleLease());
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(heartbeat).toHaveBeenCalledTimes(2);
+    await provider.destroy(lifecycleLease());
   });
 });

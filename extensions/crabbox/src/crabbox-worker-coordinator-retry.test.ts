@@ -9,17 +9,15 @@ import {
 
 const COLD_PROFILE = { ...PROFILE, warmImage: false };
 const COORDINATOR_TIMEOUT = `coordinator read retry 1/4 reason=timeout\ncontext deadline exceeded\nGet "https://coordinator.example/v1/leases/${LEASE_ID}": context deadline exceeded`;
+const timeoutResult = (stdout = "") =>
+  commandResult({ code: 1, stderr: COORDINATOR_TIMEOUT, stdout });
 
 describe("Crabbox worker coordinator retries", () => {
   it("does not retry enrollment after remote script output", async () => {
     let attempts = 0;
     const { provider, calls } = createWarmProvider(({ argv }) => {
       if (argv[1] === "run" && ++attempts <= 2) {
-        return commandResult({
-          code: 1,
-          stderr: COORDINATOR_TIMEOUT,
-          stdout: "CRABBOX_PHASE:openclaw-bootstrap-start",
-        });
+        return timeoutResult("CRABBOX_PHASE:openclaw-bootstrap-start");
       }
       return undefined;
     });
@@ -37,12 +35,7 @@ describe("Crabbox worker coordinator retries", () => {
     const setup = "install-node";
     const sleep = vi.fn(async (_ms: number) => {});
     const { provider, calls } = createWarmProvider(
-      ({ options }) => {
-        if (options.input !== setup) {
-          return undefined;
-        }
-        return commandResult({ code: 1, stderr: COORDINATOR_TIMEOUT });
-      },
+      ({ options }) => (options.input === setup ? timeoutResult() : undefined),
       undefined,
       { sleep },
     );
@@ -64,8 +57,7 @@ describe("Crabbox worker coordinator retries", () => {
   it("cancels backoff without resubmitting setup or stopping the lease", async () => {
     const controller = new AbortController();
     const { provider, calls } = createWarmProvider(
-      ({ argv }) =>
-        argv[1] === "run" ? commandResult({ code: 1, stderr: COORDINATOR_TIMEOUT }) : undefined,
+      ({ argv }) => (argv[1] === "run" ? timeoutResult() : undefined),
       undefined,
       {
         sleep: async () => {
@@ -79,9 +71,7 @@ describe("Crabbox worker coordinator retries", () => {
         { ...COLD_PROFILE, setup: "install-node" },
         undefined,
         undefined,
-        {
-          signal: controller.signal,
-        },
+        { signal: controller.signal },
       ),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(calls.filter(({ argv }) => argv[1] === "run")).toHaveLength(1);
@@ -90,7 +80,7 @@ describe("Crabbox worker coordinator retries", () => {
 
   it("does not retry warmup coordinator timeouts", async () => {
     const { provider, calls } = createWarmProvider(({ argv }) =>
-      argv[1] === "warmup" ? commandResult({ code: 1, stderr: COORDINATOR_TIMEOUT }) : undefined,
+      argv[1] === "warmup" ? timeoutResult() : undefined,
     );
     await expect(provisionWarmProfile(provider, COLD_PROFILE)).rejects.toThrow(
       "Crabbox warmup failed",
