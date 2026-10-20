@@ -1,23 +1,21 @@
-// Control UI tests cover provider quota summary behavior.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelAuthStatusProvider } from "../api/types.ts";
 import { collectProviderQuotaGroups, formatQuotaReset } from "./provider-quota-summary.ts";
 
 describe("formatQuotaReset", () => {
+  beforeEach(() => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-05-30T12:00:00.000Z"));
+  });
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
   it("returns compact relative reset windows", () => {
-    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-05-30T12:00:00.000Z"));
-
     expect(formatQuotaReset(Date.now() + 30 * 60_000)).toBe("30m");
     expect(formatQuotaReset(Date.now() + 2 * 60 * 60_000 + 15 * 60_000)).toBe("2h 15m");
   });
 
   it("returns <1m for sub-minute reset windows instead of 0m", () => {
-    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-05-30T12:00:00.000Z"));
-
     expect(formatQuotaReset(Date.now() - 1)).toBe("now");
     expect(formatQuotaReset(Date.now())).toBe("now");
     expect(formatQuotaReset(Date.now() + 1)).toBe("<1m");
@@ -32,7 +30,8 @@ describe("formatQuotaReset", () => {
 });
 
 describe("collectProviderQuotaGroups", () => {
-  const acceptAll = () => true;
+  const collect = (...providers: ModelAuthStatusProvider[]) =>
+    collectProviderQuotaGroups({ ts: 1, providers }, () => true);
 
   function providerWithUsage(
     provider: string,
@@ -57,12 +56,9 @@ describe("collectProviderQuotaGroups", () => {
       ],
       billing: [{ type: "budget", used: 157.85, limit: 400, unit: "USD", period: "month" }],
     };
-    const groups = collectProviderQuotaGroups(
-      {
-        ts: 1,
-        providers: [providerWithUsage("anthropic", usage), providerWithUsage("claude-cli", usage)],
-      },
-      acceptAll,
+    const groups = collect(
+      providerWithUsage("anthropic", usage),
+      providerWithUsage("claude-cli", usage),
     );
 
     expect(groups).toEqual([
@@ -80,24 +76,15 @@ describe("collectProviderQuotaGroups", () => {
   });
 
   it("carries the account email and keeps distinct accounts in separate groups", () => {
-    const windows = [{ label: "5h", usedPercent: 10 }];
-    const groups = collectProviderQuotaGroups(
-      {
-        ts: 1,
-        providers: [
-          providerWithUsage("anthropic", {
-            providerId: "anthropic",
-            accountEmail: "work@example.com",
-            windows,
-          }),
-          providerWithUsage("claude-cli", {
-            providerId: "anthropic",
-            accountEmail: "personal@example.com",
-            windows,
-          }),
-        ],
-      },
-      acceptAll,
+    const account = (provider: string, accountEmail: string) =>
+      providerWithUsage(provider, {
+        providerId: "anthropic",
+        accountEmail,
+        windows: [{ label: "5h", usedPercent: 10 }],
+      });
+    const groups = collect(
+      account("anthropic", "work@example.com"),
+      account("claude-cli", "personal@example.com"),
     );
 
     expect(groups.map((group) => group.accountEmail)).toEqual([
@@ -107,26 +94,20 @@ describe("collectProviderQuotaGroups", () => {
   });
 
   it("drops providers without windows or budgets and invalid budget shapes", () => {
-    const groups = collectProviderQuotaGroups(
-      {
-        ts: 1,
-        providers: [
-          providerWithUsage("anthropic", { providerId: "anthropic", windows: [] }),
-          providerWithUsage("openrouter", {
-            providerId: "openrouter",
-            windows: [],
-            billing: [
-              { type: "balance", amount: 10, unit: "USD" },
-              { type: "budget", used: 5, limit: 0, unit: "USD" },
-            ],
-          }),
-          providerWithUsage("openai", {
-            providerId: "openai",
-            windows: [{ label: "Week", usedPercent: 140 }],
-          }),
+    const groups = collect(
+      providerWithUsage("anthropic", { providerId: "anthropic", windows: [] }),
+      providerWithUsage("openrouter", {
+        providerId: "openrouter",
+        windows: [],
+        billing: [
+          { type: "balance", amount: 10, unit: "USD" },
+          { type: "budget", used: 5, limit: 0, unit: "USD" },
         ],
-      },
-      acceptAll,
+      }),
+      providerWithUsage("openai", {
+        providerId: "openai",
+        windows: [{ label: "Week", usedPercent: 140 }],
+      }),
     );
 
     expect(groups).toEqual([

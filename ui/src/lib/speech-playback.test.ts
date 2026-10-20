@@ -48,10 +48,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function player() {
+function setup(request = createGatewayRequestMock(async () => speechResult)) {
   const value = new GatewaySpeechPlayback();
   players.push(value);
-  return value;
+  return { playback: value, request, client: createTestGatewayClient(request) };
 }
 
 const speechResult = { audioBase64: "UklGRg==", mimeType: "audio/wav", provider: "openai" };
@@ -59,9 +59,7 @@ const speechResult = { audioBase64: "UklGRg==", mimeType: "audio/wav", provider:
 it.each(["tts.speak", "talk.speak"] as const)(
   "plays a long answer through sequential bounded %s requests",
   async (method) => {
-    const request = createGatewayRequestMock(async () => speechResult);
-    const client = createTestGatewayClient(request);
-    const playback = player();
+    const { request, client, playback } = setup();
     const speaking = playback.speak(client, "a".repeat(5000), method);
     await started.promise;
     expect(request).toHaveBeenCalledExactlyOnceWith(method, { text: "a".repeat(4096) });
@@ -78,16 +76,9 @@ it.each(["tts.speak", "talk.speak"] as const)(
 );
 
 it("uses the configured speech bound and stops before another chunk is requested", async () => {
-  const request = createGatewayRequestMock(async () => speechResult);
-  const playback = player();
+  const { request, client, playback } = setup();
   const bound = resolveSpeechTextLimit({ tts: { maxTextLength: 6 } });
-  const speaking = playback.speak(
-    createTestGatewayClient(request),
-    "abcdefghi",
-    "tts.speak",
-    () => true,
-    bound,
-  );
+  const speaking = playback.speak(client, "abcdefghi", "tts.speak", () => true, bound);
   await started.promise;
   expect(request).toHaveBeenCalledExactlyOnceWith("tts.speak", { text: "abcdef" });
   playback.stop();
@@ -98,9 +89,8 @@ it("uses the configured speech bound and stops before another chunk is requested
 
 it("releases a cancelled pending synthesis without playing its late result", async () => {
   const pending = createDeferred<typeof speechResult>();
-  const request = createGatewayRequestMock(() => pending.promise);
-  const playback = player();
-  const speaking = playback.speak(createTestGatewayClient(request), "Pending speech");
+  const { client, playback } = setup(createGatewayRequestMock(() => pending.promise));
+  const speaking = playback.speak(client, "Pending speech");
   playback.stop();
   await speaking;
   pending.resolve(speechResult);
@@ -109,20 +99,18 @@ it("releases a cancelled pending synthesis without playing its late result", asy
 });
 
 it("lets Talk supersede Read aloud and stops Talk before a new Read aloud plays", async () => {
-  const request = createGatewayRequestMock(async () => speechResult);
-  const client = createTestGatewayClient(request);
-  const reading = player();
+  const { client, playback: reading } = setup();
   const first = reading.speak(client, "First message");
   await started.promise;
   const firstAudio = expectDefined(audio[0], "first Read aloud audio");
-  const talk = player();
+  const { playback: talk } = setup();
   const stopTalk = vi.fn();
   talk.prepare(client, stopTalk);
   expect(firstAudio.pause).toHaveBeenCalledTimes(2);
   await first;
   expect(revokeUrl).toHaveBeenCalledOnce();
   started = createDeferred();
-  const second = player().speak(client, "Second message");
+  const second = setup().playback.speak(client, "Second message");
   await started.promise;
   expect(stopTalk).toHaveBeenCalledOnce();
   reading.stop();

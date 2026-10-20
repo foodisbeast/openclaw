@@ -9,6 +9,20 @@ import {
   resolveSessionWorkSubtitle,
 } from "./session-display.ts";
 
+function expectName(
+  key: string,
+  expected: string,
+  row?: Parameters<typeof resolveSessionDisplayName>[1],
+) {
+  expect(resolveSessionDisplayName(key, row)).toBe(expected);
+}
+function expectContext(
+  row: Parameters<typeof resolveSessionWorkContext>[0],
+  expected: ReturnType<typeof resolveSessionWorkContext>,
+) {
+  expect(resolveSessionWorkContext(row)).toEqual(expected);
+}
+
 describe("isSessionTitlePending", () => {
   const key = "agent:main:dashboard:naming";
 
@@ -52,8 +66,6 @@ describe("resolveSessionDisplayName", () => {
     expect(resolveSessionDisplayName("agent:research:main:thread")).toBe("main:thread");
   });
 
-  // Rows are shaped like the Gateway projection: displayName plus the
-  // accountId it derives from the canonical route, no user label.
   it.each([
     {
       name: "an unnamed shipped dm row reads as a friendly peer plus account",
@@ -84,28 +96,22 @@ describe("resolveSessionDisplayName", () => {
   });
 
   it("keeps explicit and worktree names ahead of derived titles", () => {
-    expect(
-      resolveSessionDisplayName("agent:main:dashboard:uuid", {
-        label: "Release room",
-        derivedTitle: "Quarterly launch plan",
-      }),
-    ).toBe("Release room");
-    expect(
-      resolveSessionDisplayName("agent:main:dashboard:uuid", {
-        worktree: { branch: "openclaw/wt-3f2a", repoRoot: "/repo/clawdbot" },
-        derivedTitle: "Quarterly launch plan",
-      }),
-    ).toBe("clawdbot ⎇ wt-3f2a");
+    const key = "agent:main:dashboard:uuid";
+    const derivedTitle = "Quarterly launch plan";
+    expectName(key, "Release room", { label: "Release room", derivedTitle });
+    expectName(key, "clawdbot ⎇ wt-3f2a", {
+      worktree: { branch: "openclaw/wt-3f2a", repoRoot: "/repo/clawdbot" },
+      derivedTitle,
+    });
   });
 
   it("names named subsessions after their slug, never the raw agent key", () => {
     expect(resolveSessionDisplayName("agent:main:node-proof-claude")).toBe("node-proof-claude");
     expect(resolveSessionDisplayName("agent:main:explicit:node-mcp-debug")).toBe("node-mcp-debug");
-    expect(
-      resolveSessionDisplayName(
-        "agent:main:explicit:model-run-0f9d5c1e-6d0f-4c9a-9d84-1c2f3a4b5c6d",
-      ),
-    ).toBe("model-run-…5c6d");
+    expectName(
+      "agent:main:explicit:model-run-0f9d5c1e-6d0f-4c9a-9d84-1c2f3a4b5c6d",
+      "model-run-…5c6d",
+    );
     expect(resolveSessionDisplayName("agent:main:node-fleet-4de003fbff138fcb9239c9378b2e")).toBe(
       "node-fleet-…8b2e",
     );
@@ -170,71 +176,68 @@ describe("resolveSessionWorkSubtitle", () => {
 
 describe("resolveSessionWorkContext", () => {
   it("projects only repository or authoritative workspace facts", () => {
-    expect(
-      resolveSessionWorkContext({
+    expectContext(
+      {
         worktree: { branch: "openclaw/session-ui", repoRoot: "/repo/openclaw" },
         spawnedCwd: "/worktrees/session-ui/packages/ui",
-      }),
-    ).toEqual({
-      kind: "project",
-      name: "openclaw",
-      path: "/repo/openclaw",
-      cwd: "/worktrees/session-ui/packages/ui",
-      branch: "session-ui",
-    });
-    expect(
-      resolveSessionWorkContext({
+      },
+      {
+        kind: "project",
+        name: "openclaw",
+        path: "/repo/openclaw",
+        cwd: "/worktrees/session-ui/packages/ui",
+        branch: "session-ui",
+      },
+    );
+    expectContext(
+      {
         spawnedWorkspaceDir: "/workspaces/release-notes",
         spawnedCwd: "/stale/cwd",
-      }),
-    ).toEqual({
-      kind: "workspace",
-      name: "release-notes",
-      path: "/workspaces/release-notes",
-    });
-    expect(
-      resolveSessionWorkContext({
+      },
+      {
+        kind: "workspace",
+        name: "release-notes",
+        path: "/workspaces/release-notes",
+      },
+    );
+    expectContext(
+      {
         execNode: "remote-node",
         execCwd: "/remote/workspace",
         spawnedWorkspaceDir: "/local/workspace",
         worktree: { branch: "openclaw/local-branch", repoRoot: "/gateway/repo" },
-      }),
-    ).toEqual({ kind: "workspace", name: "workspace", path: "/remote/workspace" });
+      },
+      { kind: "workspace", name: "workspace", path: "/remote/workspace" },
+    );
     expect(resolveSessionWorkContext({ execCwd: "/stale/local-routing-cwd" })).toBeUndefined();
-    expect(
-      resolveSessionWorkContext({
-        repository: {
-          url: "https://github.com/example/project.git",
-          branch: "openclaw/feature-cloud",
-        },
+    const repository = {
+      url: "https://github.com/example/project.git",
+      branch: "openclaw/feature-cloud",
+    };
+    const project = {
+      kind: "project",
+      name: "project",
+      path: "https://github.com/example/project",
+      branch: repository.branch,
+    } as const;
+    expectContext(
+      {
+        repository,
         execNode: "cloud-node",
         execCwd: "/remote/project",
         worktree: { branch: "stale-local-branch", repoRoot: "/gateway/repo" },
-      }),
-    ).toEqual({
-      kind: "project",
-      name: "project",
-      path: "https://github.com/example/project",
-      cwd: "/remote/project",
-      branch: "openclaw/feature-cloud",
-    });
-    expect(
-      resolveSessionWorkContext({
-        repository: {
-          url: "https://github.com/example/project.git",
-          branch: "openclaw/feature-cloud",
-        },
+      },
+      { ...project, cwd: "/remote/project" },
+    );
+    expectContext(
+      {
+        repository,
         spawnedCwd: "/gateway/unrelated",
-      }),
-    ).toEqual({
-      kind: "project",
-      name: "project",
-      path: "https://github.com/example/project",
-      cwd: undefined,
-      branch: "openclaw/feature-cloud",
-    });
-    expect(
-      resolveSessionWorkContext({
+      },
+      { ...project, cwd: undefined },
+    );
+    expectContext(
+      {
         repository: { url: "https://github.com/example/project.git", branch: "main" },
         placement: {
           state: "reclaimed",
@@ -248,58 +251,36 @@ describe("resolveSessionWorkContext", () => {
         },
         execCwd: "/gateway/stale-routing",
         spawnedCwd: "/gateway/unrelated",
-      }),
-    ).toEqual({
-      kind: "project",
-      name: "project",
-      path: "https://github.com/example/project",
-      cwd: "/cloud/project",
-      branch: "main",
-    });
+      },
+      { ...project, cwd: "/cloud/project", branch: "main" },
+    );
   });
 });
 
 describe("resolveChannelSessionInfo", () => {
   it("classifies channel-shaped keys and keeps main/dashboard out", () => {
-    expect(resolveChannelSessionInfo("agent:main:telegram:group:99")).toEqual({
-      channel: "telegram",
-      channelSession: true,
-    });
-    expect(resolveChannelSessionInfo("agent:main:slack:channel:C1")).toEqual({
-      channel: "slack",
-      channelSession: true,
-    });
+    const check = (
+      key: string,
+      expected: ReturnType<typeof resolveChannelSessionInfo>,
+      rowChannel?: string,
+    ) => expect(resolveChannelSessionInfo(`agent:main:${key}`, rowChannel)).toEqual(expected);
+    const telegram = { channel: "telegram", channelSession: true };
+    const whatsapp = { channel: "whatsapp", channelSession: true };
+    const none = { channelSession: false };
+    check("telegram:group:99", telegram);
+    check("slack:channel:C1", { channel: "slack", channelSession: true });
     // Shipped pre-#11881 keys spell direct chats `dm`; they are still channel sessions.
-    expect(resolveChannelSessionInfo("agent:main:telegram:cards:dm:42")).toEqual({
-      channel: "telegram",
-      channelSession: true,
-    });
-    expect(resolveChannelSessionInfo("agent:main:dm:+123", "whatsapp")).toEqual({
-      channel: "whatsapp",
-      channelSession: true,
-    });
+    check("telegram:cards:dm:42", telegram);
+    check("dm:+123", whatsapp, "whatsapp");
     // Accounts qualify direct chats only, so these key shapes name no channel
     // and must not be filed under one the canonical parser would reject.
-    expect(resolveChannelSessionInfo("agent:main:telegram:work:group:room")).toEqual({
-      channelSession: false,
-    });
-    expect(resolveChannelSessionInfo("agent:main:slack:acct-1:channel:C1")).toEqual({
-      channelSession: false,
-    });
-    expect(resolveChannelSessionInfo("agent:main:dm:account:group:room")).toEqual({
-      channelSession: false,
-    });
+    check("telegram:work:group:room", none);
+    check("slack:acct-1:channel:C1", none);
+    check("dm:account:group:room", none);
     // dmScope per-peer keys have no channel segment; the row channel wins.
-    expect(resolveChannelSessionInfo("agent:main:direct:+123", "whatsapp")).toEqual({
-      channel: "whatsapp",
-      channelSession: true,
-    });
-    expect(resolveChannelSessionInfo("agent:main:main", "telegram")).toEqual({
-      channelSession: false,
-    });
-    expect(resolveChannelSessionInfo("agent:main:dashboard:uuid")).toEqual({
-      channelSession: false,
-    });
+    check("direct:+123", whatsapp, "whatsapp");
+    check("main", none, "telegram");
+    check("dashboard:uuid", none);
   });
 });
 

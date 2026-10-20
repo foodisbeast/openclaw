@@ -73,6 +73,31 @@ const goalIdentity = {
   operationId: "operation-1",
   issuedAtMs: 1,
 };
+const reaction = {
+  sessionKey: "s",
+  agentId: "main",
+  sessionId: "session-1",
+  messageId: "message-1",
+  emoji: "👍",
+  action: "added",
+  actor: { type: "human", id: "user-1" },
+  reactions: [],
+};
+const voice = {
+  changeId: "change-1",
+  voiceSessionId: "voice-1",
+  sessionKey: "s",
+  voice: "voice-a",
+};
+const restriction = {
+  code: "AGENT_RUNTIME_RESTRICTED",
+  runtimeId: "native",
+  runtimeLabel: "Native",
+  reason: "permission-mode",
+};
+const observer = { sessionKey: "s", revision: 1, updatedAt: 0, health: "on-track" };
+const progress = { sessionKey: "s", revision: 1, updatedAt: 0 };
+const createFields = SessionsCreateParamsSchema.properties;
 const fixtures: Array<{
   name: string;
   schema: TSchema;
@@ -114,24 +139,9 @@ const fixtures: Array<{
     name: "session reaction",
     schema: SessionReactionEventSchema,
     check: checks.isSessionReactionEvent,
-    valid: {
-      sessionKey: "s",
-      agentId: "main",
-      sessionId: "session-1",
-      messageId: "message-1",
-      emoji: "👍",
-      action: "added",
-      actor: { type: "human", id: "user-1" },
-      reactions: [],
-    },
+    valid: reaction,
     invalid: {
-      sessionKey: "s",
-      agentId: "main",
-      sessionId: "session-1",
-      messageId: "message-1",
-      emoji: "👍",
-      action: "added",
-      actor: { type: "human", id: "user-1" },
+      ...reaction,
       reactions: [{ emoji: "👍", count: 0, identities: [] }],
     },
   },
@@ -139,20 +149,8 @@ const fixtures: Array<{
     name: "talk voice change",
     schema: TalkVoiceChangeEventSchema,
     check: checks.isTalkVoiceChangeEvent,
-    valid: {
-      changeId: "change-1",
-      voiceSessionId: "voice-1",
-      sessionKey: "s",
-      voice: "voice-a",
-      phase: "requested",
-    },
-    invalid: {
-      changeId: "change-1",
-      voiceSessionId: "voice-1",
-      sessionKey: "s",
-      voice: "voice-a",
-      phase: "ready",
-    },
+    valid: { ...voice, phase: "requested" },
+    invalid: { ...voice, phase: "ready" },
   },
   {
     name: "activity",
@@ -166,10 +164,7 @@ const fixtures: Array<{
     schema: AgentRuntimeRestrictionErrorDetailsSchema,
     check: checks.isAgentRuntimeRestrictionErrorDetails,
     valid: {
-      code: "AGENT_RUNTIME_RESTRICTED",
-      runtimeId: "native",
-      runtimeLabel: "Native",
-      reason: "permission-mode",
+      ...restriction,
       recovery: {
         action: "use-native-permissions",
         sessionId: "session-1",
@@ -179,10 +174,7 @@ const fixtures: Array<{
       },
     },
     invalid: {
-      code: "AGENT_RUNTIME_RESTRICTED",
-      runtimeId: "native",
-      runtimeLabel: "Native",
-      reason: "permission-mode",
+      ...restriction,
       recovery: { action: "use-native-permissions", sessionId: "session-1" },
     },
   },
@@ -190,20 +182,8 @@ const fixtures: Array<{
     name: "observer",
     schema: SessionObserverDigestSchema,
     check: checks.isSessionObserverDigest,
-    valid: {
-      sessionKey: "s",
-      revision: 1,
-      updatedAt: 0,
-      headline: "😀".repeat(120),
-      health: "on-track",
-    },
-    invalid: {
-      sessionKey: "s",
-      revision: 1,
-      updatedAt: 0,
-      headline: "😀".repeat(121),
-      health: "on-track",
-    },
+    valid: { ...observer, headline: "😀".repeat(120) },
+    invalid: { ...observer, headline: "😀".repeat(121) },
   },
   {
     name: "narration",
@@ -255,35 +235,35 @@ const fixtures: Array<{
   },
   {
     name: "worktree source",
-    schema: SessionsCreateParamsSchema.properties.worktreeSource,
+    schema: createFields.worktreeSource,
     check: checks.isSessionWorktreeSource,
     valid: "empty",
     invalid: "repository",
   },
   {
     name: "device folder",
-    schema: SessionsCreateParamsSchema.properties.deviceFolder,
+    schema: createFields.deviceFolder,
     check: checks.isSessionDeviceFolder,
     valid: { deviceId: "device-1", path: "/work" },
     invalid: { deviceId: "device-1", path: "" },
   },
   {
     name: "repository",
-    schema: SessionsCreateParamsSchema.properties.repository,
+    schema: createFields.repository,
     check: checks.isSessionRepository,
     valid: { url: "https://example.test/repo.git" },
     invalid: { url: "https://example.test/repo.git", unexpected: 1 },
   },
   {
     name: "fast mode",
-    schema: SessionsCreateParamsSchema.properties.fastMode,
+    schema: createFields.fastMode,
     check: checks.isSessionFastMode,
     valid: "ultrafast",
     invalid: "fast",
   },
   {
     name: "title source",
-    schema: SessionsCreateParamsSchema.properties.titleSource,
+    schema: createFields.titleSource,
     check: checks.isSessionTitleSource,
     valid: "😀".repeat(1000),
     invalid: "😀".repeat(1001),
@@ -334,18 +314,8 @@ const fixtures: Array<{
     name: "progress",
     schema: ProgressCardSchema,
     check: checks.isProgressCard,
-    valid: {
-      sessionKey: "s",
-      revision: 1,
-      updatedAt: 0,
-      steps: [{ step: "Ship", status: "pending" }],
-    },
-    invalid: {
-      sessionKey: "s",
-      revision: 1,
-      updatedAt: 0,
-      steps: [{ step: "Ship", status: "unknown" }],
-    },
+    valid: { ...progress, steps: [{ step: "Ship", status: "pending" }] },
+    invalid: { ...progress, steps: [{ step: "Ship", status: "unknown" }] },
   },
 ];
 
