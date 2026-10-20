@@ -45,9 +45,25 @@ suite.define(() => {
       await lightbox.getByRole("dialog").waitFor({ state: "visible" });
       await lightbox.locator("img.image").evaluate((image: HTMLImageElement) => image.decode());
       await lightbox.getByRole("button", { name: "Close image preview", exact: true }).click();
-      await page
-        .getByRole("textbox", { name: "Chat composer", exact: true })
-        .fill("Inspect this photo.");
+      const composer = page.getByRole("textbox", { name: "Chat composer", exact: true });
+      await composer.evaluate((element, base64) => {
+        const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+        const clipboard = new DataTransfer();
+        clipboard.items.add(new File([bytes], "pasted-photo.heif"));
+        element.dispatchEvent(
+          new ClipboardEvent("paste", {
+            bubbles: true,
+            cancelable: true,
+            clipboardData: clipboard,
+          }),
+        );
+      }, buffer.toString("base64"));
+      await expect.poll(() => rail.locator('[aria-busy="false"]').count()).toBe(3);
+      await rail
+        .locator("img")
+        .last()
+        .evaluate((image: HTMLImageElement) => image.decode());
+      await composer.fill("Inspect this photo.");
       await page.getByRole("button", { name: "Send message", exact: true }).click();
       await expect
         .poll(() => gateway.getRequests("chat.send"))
@@ -62,6 +78,11 @@ suite.define(() => {
                 },
                 {
                   fileName: "second-photo.jpg",
+                  mimeType: "image/jpeg",
+                  content: expect.any(String),
+                },
+                {
+                  fileName: "pasted-photo.jpg",
                   mimeType: "image/jpeg",
                   content: expect.any(String),
                 },

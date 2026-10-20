@@ -23,7 +23,7 @@ export function dataImageClipboardFile(
   }
 }
 
-// Only PNG uploads opt into preparation. Other formats keep ordinary admission.
+// Only PNG uploads opt into resizing beyond their ordinary admission limit.
 export function canResizeChatAttachment(file: File): boolean {
   return file.type === "image/png";
 }

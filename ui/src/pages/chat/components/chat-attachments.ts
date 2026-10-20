@@ -168,9 +168,11 @@ export function handleChatAttachmentPaste(
     return;
   }
   const imageFiles = Array.from(e.clipboardData.items ?? [])
-    .filter((item) => item.type.startsWith("image/"))
     .map((item) => item.getAsFile())
-    .filter((file): file is File => file !== null);
+    .filter(
+      (file): file is File =>
+        file !== null && (file.type.startsWith("image/") || isHeicChatAttachment(file)),
+    );
   const text = imageFiles.length === 0 ? e.clipboardData.getData("text/plain") : undefined;
   const pasted = text ? dataImageClipboardFile(text) : null;
   if (pasted) {
