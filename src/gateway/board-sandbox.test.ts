@@ -4,7 +4,6 @@ import {
   decodeSandboxHostCsp,
   normalizeSandboxHostCsp,
 } from "../agents/sandbox-host.js";
-import type { BoardWidgetDocument } from "../boards/board-store.js";
 import { buildWidgetDocument } from "../canvas/wrap.js";
 import { WIDGET_CDN_ORIGINS } from "../plugin-sdk/widget-html.js";
 import {
@@ -12,26 +11,18 @@ import {
   buildBoardWidgetSandboxPath,
 } from "./board-sandbox.js";
 
-function document(
-  grantState: "pending" | "granted",
-  netOrigins = ["https://api.open-meteo.com"],
-): BoardWidgetDocument {
-  return {
-    html: "<!doctype html>",
-    revision: 1,
-    sha256: "a".repeat(64),
-    viewGeneration: "b".repeat(32),
-    grantState,
-    declared: { netOrigins },
-  };
+function document(grantState: "pending" | "granted", netOrigins = ["https://api.open-meteo.com"]) {
+  return { grantState, declared: { netOrigins } };
+}
+
+function sandboxCsp(widget: Parameters<typeof buildBoardWidgetSandboxPath>[0]) {
+  const path = buildBoardWidgetSandboxPath(widget);
+  return decodeSandboxHostCsp(new URL(path, "https://sandbox.example").searchParams.get("csp"));
 }
 
 describe("board widget sandbox CSP", () => {
   it("permits HTTPS and generated media without granting other network access", () => {
-    const path = buildBoardWidgetSandboxPath(document("pending"));
-    const csp = decodeSandboxHostCsp(
-      new URL(path, "https://sandbox.example").searchParams.get("csp"),
-    );
+    const csp = sandboxCsp(document("pending"));
     const html = buildWidgetDocument(
       "Video",
       '<video src="https://media.example/video.mp4"></video>',
@@ -76,34 +67,25 @@ describe("board widget sandbox CSP", () => {
   });
 
   it("grants API access only to the declared widget origins", () => {
-    const path = buildBoardWidgetSandboxPath(
-      document("granted", [
-        "https://api.open-meteo.com",
-        "https://status.example:8443",
-        "https://[2001:db8::1]:9443",
-      ]),
-    );
-    const encoded = new URL(path, "https://sandbox.example").searchParams.get("csp");
-    const csp = decodeSandboxHostCsp(encoded);
+    const origins = [
+      "https://api.open-meteo.com",
+      "https://status.example:8443",
+      "https://[2001:db8::1]:9443",
+    ];
+    const csp = sandboxCsp(document("granted", origins));
 
     expect(csp).toEqual({
-      connectDomains: [
-        "https://api.open-meteo.com",
-        "https://status.example:8443",
-        "https://[2001:db8::1]:9443",
-      ],
+      connectDomains: origins,
       blockDescendantFrames: true,
       resourceDomains: [...WIDGET_CDN_ORIGINS],
       mediaDomains: ["https:", "blob:"],
     });
-    expect(buildSandboxHostDocument(csp).headers["Content-Security-Policy"]).toContain(
-      "connect-src https://api.open-meteo.com https://status.example:8443 https://[2001:db8::1]:9443",
-    );
-    expect(
+    for (const policy of [
+      buildSandboxHostDocument(csp).headers["Content-Security-Policy"],
       buildBoardWidgetContentSecurityPolicy(document("granted", csp?.connectDomains)),
-    ).toContain(
-      "connect-src https://api.open-meteo.com https://status.example:8443 https://[2001:db8::1]:9443",
-    );
+    ]) {
+      expect(policy).toContain(`connect-src ${origins.join(" ")}`);
+    }
   });
 
   it("preserves registered resource origins alongside the widget CDNs without granting fetch", () => {
@@ -111,10 +93,7 @@ describe("board widget sandbox CSP", () => {
       ...document("pending"),
       resourceOrigins: ["https://plugin-assets.example", "https://cdn.jsdelivr.net"],
     };
-    const path = buildBoardWidgetSandboxPath(widget);
-    const csp = decodeSandboxHostCsp(
-      new URL(path, "https://sandbox.example").searchParams.get("csp"),
-    );
+    const csp = sandboxCsp(widget);
 
     expect(csp?.resourceDomains).toEqual([...WIDGET_CDN_ORIGINS, "https://plugin-assets.example"]);
     expect(csp?.connectDomains).toBeUndefined();
@@ -127,19 +106,23 @@ describe("board widget sandbox CSP", () => {
     const proxy = buildSandboxHostDocument({ blockDescendantFrames: true }).html;
     const genericProxy = buildSandboxHostDocument().html;
 
-    expect(proxy).toContain("const blockDescendantFrames = true");
-    expect(proxy).toContain("sandbox descendant browsing contexts are disabled");
-    expect(proxy).toContain('lock(Document.prototype,\\"createElement\\"');
-    expect(proxy).toContain('wrapSetter(Element.prototype,\\"innerHTML\\"');
-    expect(proxy).toContain('wrapMethod(Element.prototype,\\"setHTMLUnsafe\\"');
+    for (const snippet of [
+      "const blockDescendantFrames = true",
+      "sandbox descendant browsing contexts are disabled",
+      'lock(Document.prototype,\\"createElement\\"',
+      'wrapSetter(Element.prototype,\\"innerHTML\\"',
+      'wrapMethod(Element.prototype,\\"setHTMLUnsafe\\"',
+      "const apply=Reflect.apply",
+      'if (html.slice(index, index + 4) !== "<!--") break',
+      'const commentEnd = html.indexOf("-->", index + 4)',
+    ]) {
+      expect(proxy).toContain(snippet);
+    }
     const guardedHtmlIndex = proxy.indexOf("const guardedHtml = guardDocument(params.html)");
     expect(guardedHtmlIndex).toBeGreaterThan(-1);
     expect(proxy.indexOf("widgetPortsOffered.clear()", guardedHtmlIndex)).toBeGreaterThan(
       guardedHtmlIndex,
     );
-    expect(proxy).toContain("const apply=Reflect.apply");
-    expect(proxy).toContain('if (html.slice(index, index + 4) !== "<!--") break');
-    expect(proxy).toContain('const commentEnd = html.indexOf("-->", index + 4)');
     expect(genericProxy).toContain("const blockDescendantFrames = false");
     expect(genericProxy).not.toContain('lock(Document.prototype,\\"createElement\\"');
   });

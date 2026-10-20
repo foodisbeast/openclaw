@@ -1,110 +1,85 @@
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
-  resolveGatewayInteractiveSurfaceAuth,
-  resolveGatewayProbeSurfaceAuth,
+  resolveGatewayInteractiveSurfaceAuth as interactiveAuth,
+  resolveGatewayProbeSurfaceAuth as probeAuth,
 } from "./auth-surface-resolution.js";
 
-const ambientAuth = {
+const ambientAuth: NodeJS.ProcessEnv = {
   OPENCLAW_GATEWAY_TOKEN: "ambient-token",
   OPENCLAW_GATEWAY_PASSWORD: "ambient-password", // pragma: allowlist secret
-} as NodeJS.ProcessEnv;
+};
 
 function missingSecretRef(id: string) {
   return { source: "env", provider: "default", id } as const;
 }
 
-function configWithSecretProvider(gateway: NonNullable<OpenClawConfig["gateway"]>): OpenClawConfig {
-  return {
+function params(
+  gateway: NonNullable<OpenClawConfig["gateway"]>,
+  surface: "local" | "remote" = "local",
+  env = ambientAuth,
+) {
+  const config: OpenClawConfig = {
     gateway,
     secrets: { providers: { default: { source: "env" } } },
   };
+  return { config, surface, env };
 }
 
-const unavailableGatewayRefCases = [
-  {
-    label: "local token mode",
-    surface: "local",
-    gateway: {
-      auth: { mode: "token", token: missingSecretRef("MISSING_LOCAL_TOKEN") },
-    },
-    path: "gateway.auth.token",
-  },
-  {
-    label: "implicit local token mode",
-    surface: "local",
-    gateway: { auth: { token: missingSecretRef("MISSING_LOCAL_TOKEN") } },
-    path: "gateway.auth.token",
-  },
-  {
-    label: "local password mode",
-    surface: "local",
-    gateway: {
-      auth: { mode: "password", password: missingSecretRef("MISSING_LOCAL_PASSWORD") },
-    },
-    path: "gateway.auth.password",
-  },
-  {
-    label: "implicit local password mode",
-    surface: "local",
-    gateway: { auth: { password: missingSecretRef("MISSING_LOCAL_PASSWORD") } },
-    path: "gateway.auth.password",
-  },
-  {
-    label: "remote token",
-    surface: "remote",
-    gateway: { remote: { token: missingSecretRef("MISSING_REMOTE_TOKEN") } },
-    path: "gateway.remote.token",
-  },
-  {
-    label: "remote password",
-    surface: "remote",
-    gateway: { remote: { password: missingSecretRef("MISSING_REMOTE_PASSWORD") } },
-    path: "gateway.remote.password",
-  },
-] as const;
+const token = missingSecretRef("MISSING_LOCAL_TOKEN");
+const password = missingSecretRef("MISSING_LOCAL_PASSWORD");
+const remoteToken = params(
+  { remote: { token: missingSecretRef("MISSING_REMOTE_TOKEN") } },
+  "remote",
+);
+const remotePassword = params(
+  { remote: { password: missingSecretRef("MISSING_REMOTE_PASSWORD") } },
+  "remote",
+);
 
 describe("Gateway auth surface resolution", () => {
-  it.each(unavailableGatewayRefCases)(
-    "keeps unavailable $label refs authoritative across probe and interactive surfaces",
-    async (testCase) => {
-      const params = {
-        config: configWithSecretProvider(testCase.gateway),
-        env: ambientAuth,
-        surface: testCase.surface,
-      };
+  it.each([
+    ["local token mode", params({ auth: { mode: "token", token } }), "gateway.auth.token"],
+    ["implicit local token mode", params({ auth: { token } }), "gateway.auth.token"],
+    [
+      "local password mode",
+      params({ auth: { mode: "password", password } }),
+      "gateway.auth.password",
+    ],
+    ["implicit local password mode", params({ auth: { password } }), "gateway.auth.password"],
+    ["remote token", remoteToken, "gateway.remote.token"],
+    ["remote password", remotePassword, "gateway.remote.password"],
+  ] as const)(
+    "keeps unavailable %s refs authoritative across probe and interactive surfaces",
+    async (_label, request, path) => {
       const [probe, interactive] = await Promise.all([
-        resolveGatewayProbeSurfaceAuth(params),
-        resolveGatewayInteractiveSurfaceAuth(params),
+        probeAuth(request),
+        interactiveAuth(request),
       ]);
-
-      expect(probe.token).toBeUndefined();
-      expect(probe.password).toBeUndefined();
-      expect(probe.source).toBeUndefined();
+      expect([probe.token, probe.password, probe.source]).toEqual([
+        undefined,
+        undefined,
+        undefined,
+      ]);
       expect(probe.diagnostics).toEqual([
-        expect.stringContaining(`${testCase.path} SecretRef is unresolved`),
+        expect.stringContaining(`${path} SecretRef is unresolved`),
       ]);
-      expect(interactive.token).toBeUndefined();
-      expect(interactive.password).toBeUndefined();
-      expect(interactive.failureReason).toContain(`${testCase.path} SecretRef is unresolved`);
+      expect([interactive.token, interactive.password]).toEqual([undefined, undefined]);
+      expect(interactive.failureReason).toContain(`${path} SecretRef is unresolved`);
     },
   );
 
   it("preserves a healthy configured remote password when its sibling token ref fails", async () => {
-    const params = {
-      config: configWithSecretProvider({
+    const request = params(
+      {
         remote: {
           token: missingSecretRef("MISSING_REMOTE_TOKEN"),
           password: "configured-password", // pragma: allowlist secret
         },
-      }),
-      env: ambientAuth,
-      surface: "remote" as const,
-    };
-    const [probe, interactive] = await Promise.all([
-      resolveGatewayProbeSurfaceAuth(params),
-      resolveGatewayInteractiveSurfaceAuth(params),
-    ]);
+      },
+      "remote",
+    );
+    const [probe, interactive] = await Promise.all([probeAuth(request), interactiveAuth(request)]);
 
     expect(probe).toEqual({
       token: undefined,
@@ -125,17 +100,15 @@ describe("Gateway auth surface resolution", () => {
     "ignores an unavailable $inactiveCredential ref when explicit $mode mode selects its sibling",
     async ({ mode, inactiveCredential }) => {
       await expect(
-        resolveGatewayProbeSurfaceAuth({
-          config: configWithSecretProvider({
+        probeAuth(
+          params({
             auth: {
               mode,
               [mode]: `configured-${mode}`,
               [inactiveCredential]: missingSecretRef("MISSING_INACTIVE_CREDENTIAL"),
             },
           }),
-          env: ambientAuth,
-          surface: "local",
-        }),
+        ),
       ).resolves.toEqual({ [mode]: `configured-${mode}`, source: "config" });
     },
   );
@@ -143,17 +116,13 @@ describe("Gateway auth surface resolution", () => {
   it.each([
     {
       label: "remote token",
-      surface: "remote",
-      gateway: { remote: { token: missingSecretRef("MISSING_REMOTE_TOKEN") } },
+      request: remoteToken,
       explicitAuth: { token: "explicit-token" },
       expected: { token: "explicit-token", password: undefined },
     },
     {
       label: "local password overriding token mode",
-      surface: "local",
-      gateway: {
-        auth: { mode: "token", token: missingSecretRef("MISSING_LOCAL_TOKEN") },
-      },
+      request: params({ auth: { mode: "token", token } }),
       explicitAuth: { password: "explicit-password" }, // pragma: allowlist secret
       expected: { token: undefined, password: "explicit-password" }, // pragma: allowlist secret
     },
@@ -161,11 +130,9 @@ describe("Gateway auth surface resolution", () => {
     "keeps explicit $label authoritative over unavailable configured refs",
     async (testCase) => {
       await expect(
-        resolveGatewayInteractiveSurfaceAuth({
-          config: configWithSecretProvider(testCase.gateway),
-          env: ambientAuth,
+        interactiveAuth({
+          ...testCase.request,
           explicitAuth: testCase.explicitAuth,
-          surface: testCase.surface,
         }),
       ).resolves.toEqual(testCase.expected);
     },
@@ -173,13 +140,15 @@ describe("Gateway auth surface resolution", () => {
 
   it("keeps a resolved remote password ref ahead of ambient password", async () => {
     await expect(
-      resolveGatewayInteractiveSurfaceAuth({
-        config: configWithSecretProvider({
-          remote: { password: missingSecretRef("REMOTE_PASSWORD") },
-        }),
-        env: { ...ambientAuth, REMOTE_PASSWORD: "resolved-remote-password" },
-        surface: "remote",
-      }),
+      interactiveAuth(
+        params(
+          {
+            remote: { password: missingSecretRef("REMOTE_PASSWORD") },
+          },
+          "remote",
+          { ...ambientAuth, REMOTE_PASSWORD: "resolved-remote-password" },
+        ),
+      ),
     ).resolves.toEqual({ token: undefined, password: "resolved-remote-password" }); // pragma: allowlist secret
   });
 });

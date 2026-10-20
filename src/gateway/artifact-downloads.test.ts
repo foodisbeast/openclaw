@@ -53,6 +53,66 @@ function createClient(signal = new AbortController().signal): GatewayClient {
   };
 }
 
+function artifactFrom(source: Buffer, overrides: Partial<ArtifactRecord> = {}): ArtifactRecord {
+  return {
+    id: "artifact_fixture",
+    type: "image",
+    title: "fixture",
+    mimeType: "image/png",
+    download: { mode: "bytes" },
+    data: source.toString("base64"),
+    ...overrides,
+  };
+}
+
+function grantFor(
+  client: GatewayClient,
+  artifact: ArtifactRecord,
+  overrides: Partial<Parameters<typeof createArtifactDownload>[0]> = {},
+) {
+  return createArtifactDownload({
+    client,
+    prepared: prepareArtifactDownload(artifact)!,
+    release: vi.fn(),
+    assertCurrent() {},
+    read: async (request) => prepareArtifactDownloadResponse(artifact, request),
+    ...overrides,
+  });
+}
+
+function handle(
+  client: GatewayClient,
+  path: string,
+  res: ServerResponse,
+  method = "GET",
+  headers?: Record<string, string>,
+) {
+  return handleArtifactDownloadHttpRequest(createRequest({ path, method, headers }), res, {
+    clients: new Set([client]),
+    basePath: "",
+  });
+}
+
+function listen(client: GatewayClient, before?: (res: ServerResponse) => void) {
+  return reserveTestPortListener({
+    offsets: [0],
+    createListener: () =>
+      createServer((req, res) => {
+        before?.(res);
+        void handleArtifactDownloadHttpRequest(req, res, {
+          clients: new Set([client]),
+          basePath: "",
+        });
+      }),
+  });
+}
+
+async function close(server: Awaited<ReturnType<typeof listen>>) {
+  server.listener.closeAllConnections();
+  await server.releaseListener();
+  await server.claim.release();
+}
+
 function apngWithLargeMetadata(): Buffer {
   const chunk = Buffer.alloc(1024 * 1024 + 32, 0x61);
   chunk.writeUInt32BE(chunk.length - 12);
@@ -61,20 +121,24 @@ function apngWithLargeMetadata(): Buffer {
   return Buffer.concat([APNG_BYTES.subarray(0, 33), chunk, APNG_BYTES.subarray(33)]);
 }
 
+function corruptPng() {
+  const source = createSolidPngBuffer(1600, 800, { r: 24, g: 64, b: 128 });
+  const start = source.indexOf("IDAT") + 4;
+  source.fill(0, start, start + source.readUInt32BE(start - 8));
+  return source;
+}
+
 it.each(["source", "connection", "expiry"] as const)(
   "rechecks captured download authority after the read settles (%s)",
   async (change) => {
     using clock = vi.spyOn(Date, "now").mockReturnValue(1000);
     const controller = new AbortController();
     const client = createClient(controller.signal);
-    const artifact: ArtifactRecord = {
-      id: "artifact_fixture",
+    const artifact = artifactFrom(Buffer.from("captured body"), {
       type: "file",
       title: "captured.txt",
       mimeType: "text/plain",
-      download: { mode: "bytes" },
-      data: "Y2FwdHVyZWQgYm9keQ==",
-    };
+    });
     const entered = createDeferredCore();
     const release = createDeferredCore();
     let sourceCurrent = true;
@@ -95,11 +159,7 @@ it.each(["source", "connection", "expiry"] as const)(
     };
     const grant = createArtifactDownload(grantOptions);
     const response = createResponse();
-    const pending = handleArtifactDownloadHttpRequest(
-      createRequest({ path: grant.url }),
-      response.res,
-      { clients: new Set([client]), basePath: "" },
-    );
+    const pending = handle(client, grant.url, response.res);
     try {
       await entered.promise;
       expect(response.end).not.toHaveBeenCalled();
@@ -123,73 +183,46 @@ it.each(["source", "connection", "expiry"] as const)(
 );
 
 it.each([
-  "image",
-  "large",
-  "file",
-  "invalid-image",
-  "corrupt-png",
-  "gif",
-  "apng",
-  "apng-metadata",
-  "compact",
+  [
+    "image",
+    () => createSolidPngBuffer(1600, 800, { r: 24, g: 64, b: 128 }),
+    "image/png",
+    [960, 480],
+  ],
+  ["large", () => createNoisyPngBuffer(600, 300), "image/png", [600, 300]],
+  ["file", () => Buffer.from("original"), "text/plain", []],
+  ["invalid-image", () => Buffer.from("original"), "image/png", null],
+  ["corrupt-png", corruptPng, "image/png", null],
+  ["gif", () => ANIMATED_GIF_BYTES, "image/gif", null],
+  ["apng", () => APNG_BYTES, "image/png", null],
+  ["apng-metadata", apngWithLargeMetadata, "image/png", null],
+  [
+    "compact",
+    async () =>
+      (
+        await createImageProcessor().encode(createNoisyPngBuffer(32, 32), {
+          format: "jpeg",
+          quality: 10,
+        })
+      ).data,
+    "image/jpeg",
+    [32, 32],
+  ],
 ] as const)(
   "serves bounded HTTP thumbnails without falling back to original images (%s)",
-  async (kind) => {
-    const source =
-      kind === "image" || kind === "corrupt-png"
-        ? createSolidPngBuffer(1600, 800, { r: 24, g: 64, b: 128 })
-        : kind === "large"
-          ? createNoisyPngBuffer(600, 300)
-          : kind === "gif"
-            ? ANIMATED_GIF_BYTES
-            : kind === "apng"
-              ? APNG_BYTES
-              : kind === "apng-metadata"
-                ? apngWithLargeMetadata()
-                : kind === "compact"
-                  ? (
-                      await createImageProcessor().encode(createNoisyPngBuffer(32, 32), {
-                        format: "jpeg",
-                        quality: 10,
-                      })
-                    ).data
-                  : Buffer.from("original");
-    if (kind === "corrupt-png") {
-      const start = source.indexOf("IDAT") + 4;
-      source.fill(0, start, start + source.readUInt32BE(start - 8));
-    }
-    const artifact: ArtifactRecord = {
-      id: "artifact_transcript_image_fixture",
+  async (kind, makeSource, mimeType, dimensions) => {
+    const source = await makeSource();
+    const artifact = artifactFrom(source, {
       type: kind === "file" ? "file" : "image",
-      title: "fixture",
-      mimeType:
-        kind === "file"
-          ? "text/plain"
-          : kind === "gif"
-            ? "image/gif"
-            : kind === "compact"
-              ? "image/jpeg"
-              : "image/png",
-      download: { mode: "bytes" },
-      data: source.toString("base64"),
-    };
-    const client = createClient();
-    const grant = createArtifactDownload({
-      client,
-      prepared: prepareArtifactDownload(artifact)!,
-      release: vi.fn(),
-      assertCurrent() {},
-      read: async (request) => prepareArtifactDownloadResponse(artifact, request),
+      mimeType,
     });
+    const client = createClient();
+    const grant = grantFor(client, artifact);
     const fetch = async (query: string, method = "GET", headers?: Record<string, string>) => {
       const response = createResponse();
-      expect(
-        await handleArtifactDownloadHttpRequest(
-          createRequest({ path: `${grant.url}${query}`, method, headers }),
-          response.res,
-          { clients: new Set([client]), basePath: "" },
-        ),
-      ).toBe(true);
+      expect(await handle(client, `${grant.url}${query}`, response.res, method, headers)).toBe(
+        true,
+      );
       return response;
     };
     for (const query of ["", "?variant=unknown"]) {
@@ -197,7 +230,7 @@ it.each([
       expect(full.end).toHaveBeenCalledExactlyOnceWith(new Uint8Array(source));
     }
     const thumbnail = await fetch("?variant=thumbnail");
-    if (["invalid-image", "corrupt-png", "gif", "apng", "apng-metadata"].includes(kind)) {
+    if (dimensions === null) {
       expect(thumbnail.res.statusCode).toBe(404);
       expect(thumbnail.end).toHaveBeenCalledExactlyOnceWith("Not Found");
       return;
@@ -222,29 +255,20 @@ it.each([
       "content-disposition",
       expect.stringMatching(/^attachment;/),
     );
-    if (kind === "image") {
+    if (dimensions.length) {
       expect(await createImageProcessor().probe(bytes)).toMatchObject({
         format: "webp",
-        width: 960,
-        height: 480,
+        width: dimensions[0],
+        height: dimensions[1],
       });
+    }
+    if (kind === "image") {
       expect(bytes).not.toEqual(new Uint8Array(source));
       expect(bytes.byteLength).toBeLessThan(source.byteLength);
     } else if (kind === "large") {
-      expect(await createImageProcessor().probe(bytes)).toMatchObject({
-        format: "webp",
-        width: 600,
-        height: 300,
-      });
       expect(bytes.byteLength).toBeLessThanOrEqual(256 * 1024);
       expect(bytes.byteLength).toBeLessThan(source.byteLength);
-    } else if (kind === "compact") {
-      expect(await createImageProcessor().probe(bytes)).toMatchObject({
-        format: "webp",
-        width: 32,
-        height: 32,
-      });
-    } else {
+    } else if (kind === "file") {
       expect(Buffer.from(bytes).equals(source)).toBe(true);
     }
     const head = await fetch("?variant=thumbnail", "HEAD");
@@ -260,23 +284,13 @@ it.each(["missing", "stream", "body-and-stream"] as const)(
   "refuses unavailable thumbnail bytes without opening an original stream (%s)",
   async (kind) => {
     const source = createSolidPngBuffer(32, 16, { r: 20, g: 40, b: 60 });
-    const artifact: ArtifactRecord = {
-      id: "artifact_unavailable_preview",
-      type: "image",
-      title: "photo.png",
-      mimeType: "image/png",
-      download: { mode: "bytes" },
-      data: source.toString("base64"),
-    };
+    const artifact = artifactFrom(source, { title: "photo.png" });
     const stream = vi.fn(async function* () {
       yield source;
     });
     const client = createClient();
-    const grant = createArtifactDownload({
-      client,
-      prepared: prepareArtifactDownload(artifact)!,
+    const grant = grantFor(client, artifact, {
       release() {},
-      assertCurrent() {},
       read: async (request) => {
         const prepared = prepareArtifactDownloadResponse(artifact, request)!;
         return {
@@ -287,11 +301,7 @@ it.each(["missing", "stream", "body-and-stream"] as const)(
       },
     });
     const response = createResponse();
-    await handleArtifactDownloadHttpRequest(
-      createRequest({ path: grant.url + "?variant=thumbnail" }),
-      response.res,
-      { clients: new Set([client]), basePath: "" },
-    );
+    await handle(client, grant.url + "?variant=thumbnail", response.res);
     expect(response.res.statusCode).toBe(404);
     expect(response.end).toHaveBeenCalledExactlyOnceWith("Not Found");
     expect(stream).not.toHaveBeenCalled();
@@ -301,33 +311,9 @@ it.each(["missing", "stream", "body-and-stream"] as const)(
 it("serves distinct fixed WebP renditions over HTTP with alpha, orientation, and exact originals", async () => {
   const processor = createImageProcessor();
   const client = createClient();
-  const server = await reserveTestPortListener({
-    offsets: [0],
-    createListener: () =>
-      createServer((req, res) => {
-        void handleArtifactDownloadHttpRequest(req, res, {
-          clients: new Set([client]),
-          basePath: "",
-        });
-      }),
-  });
-  const grantFor = (source: Buffer, mimeType = "image/png") => {
-    const artifact: ArtifactRecord = {
-      id: "artifact_rendition_fixture",
-      type: "image",
-      title: "photo.png",
-      mimeType,
-      download: { mode: "bytes" },
-      data: source.toString("base64"),
-    };
-    return createArtifactDownload({
-      client,
-      prepared: prepareArtifactDownload(artifact)!,
-      release() {},
-      assertCurrent() {},
-      read: async (request) => prepareArtifactDownloadResponse(artifact, request),
-    }).url;
-  };
+  const server = await listen(client);
+  const grantImage = (source: Buffer, mimeType = "image/png") =>
+    grantFor(client, artifactFrom(source, { title: "photo.png", mimeType })).url;
   const fetchImage = async (url: string) => {
     const origin = "http://127.0.0.1:" + server.claim.port;
     const target = new URL(url, origin);
@@ -347,7 +333,7 @@ it("serves distinct fixed WebP renditions over HTTP with alpha, orientation, and
   };
   try {
     const source = createSolidPngBuffer(2400, 1200, { r: 24, g: 64, b: 128, a: 96 });
-    const url = grantFor(source);
+    const url = grantImage(source);
     let defaultBytes: Buffer | undefined;
     for (const [width, ceiling] of [
       [480, 96],
@@ -379,7 +365,7 @@ it("serves distinct fixed WebP renditions over HTTP with alpha, orientation, and
     expect(original.bytes).toEqual(source);
 
     // Dense images may step down, but may not evade the selected rendition's byte ceiling.
-    const denseUrl = grantFor(createNoisyPngBuffer(1600, 800));
+    const denseUrl = grantImage(createNoisyPngBuffer(1600, 800));
     const dense = await fetchImage(denseUrl + "?variant=thumbnail&width=480");
     expect(dense.response.status).toBe(200);
     expect(dense.bytes.byteLength).toBeLessThanOrEqual(96 * 1024);
@@ -398,7 +384,7 @@ it("serves distinct fixed WebP renditions over HTTP with alpha, orientation, and
       "ffe1002245786966000049492a0008000000010012010300010000000600000000000000",
       "hex",
     );
-    const orientedUrl = grantFor(
+    const orientedUrl = grantImage(
       Buffer.concat([jpeg.subarray(0, 2), orientation, jpeg.subarray(2)]),
       "image/jpeg",
     );
@@ -410,14 +396,12 @@ it("serves distinct fixed WebP renditions over HTTP with alpha, orientation, and
     });
 
     const invalid = await fetchImage(
-      grantFor(Buffer.from("not an image")) + "?variant=thumbnail&width=480",
+      grantImage(Buffer.from("not an image")) + "?variant=thumbnail&width=480",
     );
     expect(invalid.response.status).toBe(404);
     expect(invalid.bytes.toString()).toBe("Not Found");
   } finally {
-    server.listener.closeAllConnections();
-    await server.releaseListener();
-    await server.claim.release();
+    await close(server);
   }
 });
 
@@ -432,14 +416,13 @@ it("releases retained sharing facts on unused expiry, eviction, and disconnect",
       { agentId: "main", sessionKey },
       { sessionId: "grant-lifetime", updatedAt: 1 },
     );
-    const prepared = prepareArtifactDownload({
-      id: "artifact_lifetime",
-      type: "file",
-      title: "lifetime.txt",
-      mimeType: "text/plain",
-      download: { mode: "bytes" },
-      data: "aGVsbG8=",
-    })!;
+    const prepared = prepareArtifactDownload(
+      artifactFrom(Buffer.from("hello"), {
+        type: "file",
+        title: "lifetime.txt",
+        mimeType: "text/plain",
+      }),
+    )!;
     for (const reason of ["expiry", "eviction", "disconnect", "shutdown"]) {
       for (const kind of ["bytes", "managed"]) {
         const controller = new AbortController();
@@ -542,18 +525,10 @@ it("backpressures HTTP streams across URL expiry and closes their source on brow
       },
     }),
   });
-  const server = await reserveTestPortListener({
-    offsets: [0],
-    createListener: () =>
-      createServer((req, res) => {
-        // Hold the real socket's writes: the source must wait for drain, not collect the file.
-        res.cork();
-        started.resolve(res);
-        void handleArtifactDownloadHttpRequest(req, res, {
-          clients: new Set([client]),
-          basePath: "",
-        });
-      }),
+  const server = await listen(client, (res) => {
+    // Hold the real socket's writes: the source must wait for drain, not collect the file.
+    res.cork();
+    started.resolve(res);
   });
   const abort = new AbortController();
   try {
@@ -587,8 +562,6 @@ it("backpressures HTTP streams across URL expiry and closes their source on brow
   } finally {
     abort.abort();
     connection.abort();
-    server.listener.closeAllConnections();
-    await server.releaseListener();
-    await server.claim.release();
+    await close(server);
   }
 });
