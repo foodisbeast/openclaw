@@ -30,7 +30,6 @@ import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { runOpenClawAgentWriteAdmission } from "../state/openclaw-agent-write-admission.js";
 import {
-  CLIENT_VOICE_MUTATION_DIGEST_POLICY,
   ClientVoiceMutationDigestOwner,
   createClientVoiceMutationDigestDeliveryOptions,
 } from "./client-voice-mutation-digest-owner.js";
@@ -50,7 +49,6 @@ import {
   type ClientVoiceRunBinding,
   type ClientVoiceSessionRecord,
   operationKey,
-  readVoiceSessionRecord as readRecord,
   VOICE_SESSION_STALE_AFTER_MS as STALE_AFTER_MS,
 } from "./client-voice-session-store.js";
 import {
@@ -709,8 +707,6 @@ export async function closeStaleClientVoiceSessions(params: {
 }
 
 const clientVoiceSessionTesting = {
-  readRecord,
-  digestDeliveryPolicy: CLIENT_VOICE_MUTATION_DIGEST_POLICY,
   reset(): void {
     for (const [runId, owner] of voiceSessionByRunId) {
       retireClientVoiceRun(runId, owner, false);

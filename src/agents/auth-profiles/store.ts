@@ -1248,18 +1248,7 @@ export function createAuthProfileStoreRuntime(
     );
   }
 
-  const {
-    loadAuthProfileStoreWithoutExternalProfiles,
-    loadAuthProfileStoreWithoutExternalProfilesAsync,
-    loadAuthProfileStoreForCatalogAsync,
-    ensureAuthProfileStore,
-    ensureAuthProfileStoreAsync,
-    ensureAuthProfileStoreWithoutExternalProfiles,
-    ensureAuthProfileStoreWithoutExternalProfilesAsync,
-    ensureAuthProfileStoreForLocalUpdate,
-    ensureAuthProfileStoreForLocalUpdateAsync,
-    prepareAuthProfileStoreForModelRuntime,
-  } = createAuthProfileStoreReadRuntime({
+  const { prepareAuthProfileStoreForModelRuntime, ...reads } = createAuthProfileStoreReadRuntime({
     resolvePersistedLoadOptions,
     loadAuthProfileStoreForAgent,
     withPreparedAuthProfileStoreReads,
@@ -1725,15 +1714,7 @@ export function createAuthProfileStoreRuntime(
     loadAuthProfileStore,
     loadAuthProfileStoreForSecretsRuntime,
     loadAuthProfileStoreForSecretsRuntimeAsync,
-    loadAuthProfileStoreWithoutExternalProfiles,
-    loadAuthProfileStoreWithoutExternalProfilesAsync,
-    loadAuthProfileStoreForCatalogAsync,
-    ensureAuthProfileStore,
-    ensureAuthProfileStoreAsync,
-    ensureAuthProfileStoreWithoutExternalProfiles,
-    ensureAuthProfileStoreWithoutExternalProfilesAsync,
-    ensureAuthProfileStoreForLocalUpdate,
-    ensureAuthProfileStoreForLocalUpdateAsync,
+    ...reads,
     saveAuthProfileStore,
     saveAuthProfileStoreWithPreparedOwner,
     saveAuthProfileStoreIfPersistenceSnapshotMatches,
