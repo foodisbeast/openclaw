@@ -480,12 +480,7 @@ export async function processCompletionsStream(
       );
       const reasoningDeltas = reasoningBatch.deltas;
       const hasReasoningThinking = reasoningBatch.hasThinking;
-      if (
-        hasReasoningThinking &&
-        model.reasoning === false &&
-        !emitReasoning &&
-        !suppressedReasoning
-      ) {
+      if (hasReasoningThinking && !model.reasoning && !emitReasoning && !suppressedReasoning) {
         suppressedReasoning = true;
         recordSuppressedReasoning(output);
       }
