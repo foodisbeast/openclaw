@@ -38,6 +38,14 @@ test("measures connect delivery and closed admission without payloads", async ()
     gateway: { auth, trustedProxies: ["127.0.0.1"], controlUi: { allowedOrigins: [origin] } },
   });
   await withGatewayServer(async ({ port }) => {
+    const connect = (socket: WebSocket) =>
+      connectReq(socket, {
+        skipDefaultAuth: true,
+        prePairDevice: true,
+        client: { ...CONTROL_UI_CLIENT, instanceId: "private-instance" },
+        scopes: ["operator.read"],
+        browserOrigin: origin,
+      });
     const events: Extract<DiagnosticEventPayload, { type: "gateway.rpc" }>[] = [];
     const responses: Record<string, unknown>[] = [];
     const originalLogWs = wsLog.logWs;
@@ -101,13 +109,7 @@ test("measures connect delivery and closed admission without payloads", async ()
         let releaseWrite: (() => void) | undefined;
         try {
           const closed = outcome === "unavailable" ? once(socket, "close") : undefined;
-          const response = connectReq(socket, {
-            skipDefaultAuth: true,
-            prePairDevice: true,
-            client: { ...CONTROL_UI_CLIENT, instanceId: "private-instance" },
-            scopes: ["operator.read"],
-            browserOrigin: origin,
-          });
+          const response = connect(socket);
           if (closed) {
             void response.catch(() => {});
             releaseWrite = await pendingWrite.promise;
@@ -180,13 +182,7 @@ test("measures connect delivery and closed admission without payloads", async ()
       const suspension = tryBeginGatewaySuspendAdmission(() => {});
       expect(suspension).not.toBeNull();
       try {
-        const result = await connectReq(socket, {
-          skipDefaultAuth: true,
-          prePairDevice: true,
-          client: { ...CONTROL_UI_CLIENT, instanceId: "private-instance" },
-          scopes: ["operator.read"],
-          browserOrigin: origin,
-        });
+        const result = await connect(socket);
         expect(result).toMatchObject({
           ok: false,
           error: { code: "UNAVAILABLE", retryable: true },
