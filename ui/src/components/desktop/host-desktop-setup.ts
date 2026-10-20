@@ -1,10 +1,10 @@
 import type { EnvironmentSummary } from "@openclaw/gateway-protocol";
+import { t } from "../../i18n/index.ts";
 import { registerSystemsEnglish } from "../../i18n/locales/en-systems.ts";
 import type { RuntimeConfigCapability } from "../../lib/config/runtime-config-capability.ts";
 import { formatUiError } from "../../lib/format-error.ts";
-import { registerEnglishCatalog, t } from "../../lib/reactive/i18n.ts";
 
-registerEnglishCatalog(registerSystemsEnglish);
+registerSystemsEnglish();
 
 /** Config authority needed to turn Host Desktop on; hosts without it only point to an administrator. */
 export type HostDesktopRuntimeConfig = Pick<

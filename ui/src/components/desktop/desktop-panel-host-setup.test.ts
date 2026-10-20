@@ -2,14 +2,11 @@
 
 import type { EnvironmentSummary } from "@openclaw/gateway-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { waitForSolid } from "../../test-helpers/solid-settle.ts";
 import type { DesktopClient } from "./desktop-client.ts";
 import {
   createConnectionHandle,
   createGatewayClient,
   createPanel,
-  mountPanel,
-  updatePanel,
 } from "./desktop-panel.test-support.ts";
 
 const UNAVAILABLE = "The requested desktop is unavailable. Retry when the machine is ready.";
@@ -60,7 +57,7 @@ async function mount(
     return createConnectionHandle();
   });
   const panel = createPanel();
-  updatePanel(panel, {
+  Object.assign(panel, {
     client: gateway.client,
     available: true,
     embedded: true,
@@ -70,9 +67,10 @@ async function mount(
     desktopClientFactory: () => ({ connect }),
     runtimeConfig,
   });
-  await mountPanel(panel);
+  document.body.append(panel);
+  await panel.updateComplete;
   const button = (name: string) =>
-    Array.from(panel.querySelectorAll("button")).find(
+    Array.from(panel.renderRoot.querySelectorAll("button")).find(
       (entry) => (entry.getAttribute("aria-label") ?? entry.textContent)?.trim() === name,
     );
   return {
@@ -97,21 +95,25 @@ describe("Desktop host setup guidance", () => {
       { state: "ready" },
       true,
     );
-    await waitForSolid(() => expect(panel.textContent).toContain("Screen Sharing is available"));
-    expect(panel.textContent).toContain("Desktop access is not enabled on the Gateway host.");
-    expect(panel.textContent).toContain("shares the Gateway host's screen");
-    expect(panel.textContent).toContain(
+    await vi.waitFor(() =>
+      expect(panel.renderRoot.textContent).toContain("Screen Sharing is available"),
+    );
+    expect(panel.renderRoot.textContent).toContain(
+      "Desktop access is not enabled on the Gateway host.",
+    );
+    expect(panel.renderRoot.textContent).toContain("shares the Gateway host's screen");
+    expect(panel.renderRoot.textContent).toContain(
       "Enable desktop access to view and control the Gateway host in OpenClaw.",
     );
-    expect(panel.textContent).toContain("macOS user account on the Gateway host");
-    expect(panel.textContent).toContain("Applies without restarting the Gateway.");
-    expect(panel.textContent).toContain("reachable from other devices on your network");
-    expect(panel.textContent).not.toContain(UNAVAILABLE);
+    expect(panel.renderRoot.textContent).toContain("macOS user account on the Gateway host");
+    expect(panel.renderRoot.textContent).toContain("Applies without restarting the Gateway.");
+    expect(panel.renderRoot.textContent).toContain("reachable from other devices on your network");
+    expect(panel.renderRoot.textContent).not.toContain(UNAVAILABLE);
     expect(request).toHaveBeenCalledWith("environments.list", { includeDesktopSetup: true });
     expect(connect).not.toHaveBeenCalled();
 
     button(ENABLE)?.click();
-    await waitForSolid(() => expect(connect).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledOnce());
     expect(runtimeConfig.patch).toHaveBeenCalledOnce();
     expect(runtimeConfig.patch).toHaveBeenCalledWith(
       expect.objectContaining({ raw: { desktop: { host: { enabled: true } } } }),
@@ -125,31 +127,41 @@ describe("Desktop host setup guidance", () => {
       { state: "needs-server" },
       false,
     );
-    await waitForSolid(() => expect(panel.textContent).toContain("Turn on Screen Sharing"));
-    expect(panel.textContent).toContain("On the Gateway host Mac, open System Settings");
-    expect(panel.textContent).toContain("allow the Gateway host account to Observe and Control");
-    expect(panel.textContent).not.toContain("On this Mac");
-    expect(panel.textContent).toContain("reachable from other devices on your network");
-    expect(panel.textContent).not.toContain(UNAVAILABLE);
+    await vi.waitFor(() =>
+      expect(panel.renderRoot.textContent).toContain("Turn on Screen Sharing"),
+    );
+    expect(panel.renderRoot.textContent).toContain("On the Gateway host Mac, open System Settings");
+    expect(panel.renderRoot.textContent).toContain(
+      "allow the Gateway host account to Observe and Control",
+    );
+    expect(panel.renderRoot.textContent).not.toContain("On this Mac");
+    expect(panel.renderRoot.textContent).toContain("reachable from other devices on your network");
+    expect(panel.renderRoot.textContent).not.toContain(UNAVAILABLE);
     expect(button(ENABLE)).toBeUndefined();
     expect(connect).not.toHaveBeenCalled();
 
     enable();
     button("Check again")?.click();
-    await waitForSolid(() => expect(connect).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledOnce());
     expect(observeHost(request)).toHaveLength(1);
   });
 
   it("points to an administrator when this connection cannot patch config", async () => {
     const linuxHost = { ...gatewayHost, platform: "linux" };
     const { panel, button } = await mount(linuxHost, { state: "ready" }, false);
-    await waitForSolid(() => expect(panel.textContent).toContain("A desktop is available"));
-    expect(panel.textContent).toContain("desktop server on the Gateway host uses its own password");
-    expect(panel.textContent).toContain(
+    await vi.waitFor(() =>
+      expect(panel.renderRoot.textContent).toContain("A desktop is available"),
+    );
+    expect(panel.renderRoot.textContent).toContain(
+      "desktop server on the Gateway host uses its own password",
+    );
+    expect(panel.renderRoot.textContent).toContain(
       "The desktop server may be reachable from other devices on your network.",
     );
-    expect(panel.textContent).toContain("A Gateway administrator can enable desktop access.");
-    expect(panel.textContent).not.toContain(UNAVAILABLE);
+    expect(panel.renderRoot.textContent).toContain(
+      "A Gateway administrator can enable desktop access.",
+    );
+    expect(panel.renderRoot.textContent).not.toContain(UNAVAILABLE);
     expect(button(ENABLE)?.disabled).toBe(true);
     expect(button("Check again")).toBeDefined();
   });
@@ -161,9 +173,9 @@ describe("Desktop host setup guidance", () => {
       status: "available",
     };
     const { panel, request, button } = await mount(workstation, { state: "ready" }, true);
-    await waitForSolid(() => expect(panel.textContent).toContain(UNAVAILABLE));
+    await vi.waitFor(() => expect(panel.renderRoot.textContent).toContain(UNAVAILABLE));
     expect(button("Retry")).toBeDefined();
-    expect(panel.textContent).not.toContain("Screen Sharing");
+    expect(panel.renderRoot.textContent).not.toContain("Screen Sharing");
     expect(request.mock.calls.some(([, params]) => params && "includeDesktopSetup" in params)).toBe(
       false,
     );
@@ -177,10 +189,12 @@ describe("Desktop host setup guidance", () => {
     );
     runtimeConfig.patch.mockResolvedValueOnce(false);
     runtimeConfig.state.lastError = "Config write rejected.";
-    await waitForSolid(() => expect(button(ENABLE)).toBeDefined());
+    await vi.waitFor(() => expect(button(ENABLE)).toBeDefined());
     button(ENABLE)?.click();
-    await waitForSolid(() =>
-      expect(panel.querySelector('[role="alert"]')?.textContent).toBe("Config write rejected."),
+    await vi.waitFor(() =>
+      expect(panel.renderRoot.querySelector('[role="alert"]')?.textContent).toBe(
+        "Config write rejected.",
+      ),
     );
     expect(button(ENABLE)?.disabled).toBe(false);
     expect(connect).not.toHaveBeenCalled();
@@ -188,7 +202,7 @@ describe("Desktop host setup guidance", () => {
 
   it("keeps the generic notice when the setup check fails", async () => {
     const { panel, button } = await mount(gatewayHost, new Error("setup check failed"), true);
-    await waitForSolid(() => expect(panel.textContent).toContain(UNAVAILABLE));
+    await vi.waitFor(() => expect(panel.renderRoot.textContent).toContain(UNAVAILABLE));
     expect(button("Retry")).toBeDefined();
   });
 });
