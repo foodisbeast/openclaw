@@ -24,7 +24,7 @@ import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { reserveTestPortListener } from "../../test-utils/port-claims.js";
 import type { UpdateCommandOptions } from "./shared.js";
-import { withCurrentF3Admission } from "./update-command-original-service-current.test-admission.js";
+import { withCurrentF3Admission } from "./update-command-original-service-current.admission.test-support.js";
 import {
   observeOriginalManagedServiceRuntime,
   revalidateOriginalManagedServiceRuntime,
