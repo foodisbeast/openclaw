@@ -116,6 +116,10 @@ export function attachmentReservationBytes(
   availableBytes = Infinity,
 ): number {
   const ceiling = mimeType.startsWith("image/") ? limits?.maxImageBytes : limits?.maxBytes;
+  // HEIC may expand when encoded as JPEG. Reserve its output ceiling until ready.
+  if (/^image\/hei[cf](?:-sequence)?$/i.test(mimeType)) {
+    return Math.max(0, Math.min(ceiling ?? 5 * 1024 * 1024, availableBytes));
+  }
   return Math.max(0, Math.min(sizeBytes, ceiling ?? Infinity, availableBytes));
 }
 

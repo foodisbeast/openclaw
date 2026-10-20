@@ -11,7 +11,7 @@ import {
   attachmentReservationBytes,
   type ChatAttachmentLimits,
 } from "./chat-attachment-admission.ts";
-import { resizeChatAttachmentImage } from "./chat-attachment-image.ts";
+import { isHeicChatAttachment, prepareChatAttachmentImage } from "./chat-attachment-image.ts";
 
 const CHAT_ATTACHMENT_READ_TIMEOUT_MS = 15_000;
 
@@ -291,7 +291,7 @@ export function readChatAttachmentFile(
     if (settled) {
       return;
     }
-    // Intake reserved this file's batch share at its per-file ceiling; preparation can only shrink it.
+    // Preparation must fit the batch share reserved at intake.
     if (
       prepared.size > (entry.reservedBytes ?? Infinity) ||
       admitAttachmentFiles([prepared], props.attachmentLimits, 0).length === 0
@@ -343,11 +343,16 @@ export function readChatAttachmentFile(
         });
     };
     reads.updateProgress(entry, 0);
-  } else if (imageLimit !== undefined && file.type.startsWith("image/") && file.size > imageLimit) {
-    void resizeChatAttachmentImage(file, imageLimit, preparation.signal, setProcessing).then(
-      readPreparedFile,
-      () => finish("error"),
-    );
+  } else if (
+    isHeicChatAttachment(file) ||
+    (imageLimit !== undefined && file.type.startsWith("image/") && file.size > imageLimit)
+  ) {
+    void prepareChatAttachmentImage(
+      file,
+      entry.reservedBytes ?? imageLimit ?? 5 * 1024 * 1024,
+      preparation.signal,
+      setProcessing,
+    ).then(readPreparedFile, () => finish("error"));
   } else {
     readPreparedFile(file);
   }

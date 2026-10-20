@@ -9,7 +9,7 @@ import {
 import { admitAttachmentFiles, chatAttachmentBatchBytes } from "./chat-attachment-admission.ts";
 import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.types.ts";
 import { currentAttachments } from "./chat-attachment-draft.ts";
-import { dataImageClipboardFile } from "./chat-attachment-image.ts";
+import { dataImageClipboardFile, isHeicChatAttachment } from "./chat-attachment-image.ts";
 import { ChatAttachmentReadLifecycle, readChatAttachmentFile } from "./chat-attachment-reads.ts";
 import { encodeTextAsDataUrl } from "./chat-attachment-text.ts";
 
@@ -99,8 +99,15 @@ export function appendChatAttachmentFiles(
     showToast({ message: uploadsDisabledMessage() });
     return 0;
   }
+  // Some file pickers leave HEIC's type empty. Normalize it before admission so
+  // image limits, batch reservations, and image-only composers agree.
+  const typedFiles = candidates.map((file) =>
+    isHeicChatAttachment(file) && !file.type.startsWith("image/")
+      ? new File([file], file.name, { type: "image/heic", lastModified: file.lastModified })
+      : file,
+  );
   const unsupported = props.imagesOnly
-    ? candidates.filter((file) => !file.type.startsWith("image/"))
+    ? typedFiles.filter((file) => !file.type.startsWith("image/"))
     : [];
   if (unsupported.length) {
     showToast({ message: t("chat.attachments.imagesOnly") });
@@ -108,7 +115,7 @@ export function appendChatAttachmentFiles(
   const reads = props.attachmentReads ?? new ChatAttachmentReadLifecycle(() => {});
   const stagedBytes = stagedAttachmentBytes(props);
   const files = admitAttachmentFiles(
-    candidates.filter((file) => !unsupported.includes(file)),
+    typedFiles.filter((file) => !unsupported.includes(file)),
     props.attachmentLimits,
     stagedBytes,
     {
@@ -192,6 +199,7 @@ export function handleChatAttachmentPaste(
   e.preventDefault();
   if (
     pasted &&
+    !isHeicChatAttachment(pasted.file) &&
     (!props.attachmentLimits || pasted.file.size <= props.attachmentLimits.maxImageBytes)
   ) {
     const stagedBytes = stagedAttachmentBytes(props);

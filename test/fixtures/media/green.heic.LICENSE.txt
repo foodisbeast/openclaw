@@ -1,0 +1,27 @@
+Synthetic 64x64 solid lime HEIC fixture. No photographs or user data.
+
+Source: https://github.com/openclaw/rastermill/blob/a1fa21577a3e42229b1d54b7d963b660fe4e921b/test/fixtures/green.heic.base64
+Decoded SHA-256: e44d7d2fa6e0b6754939bbfd849725f828581b5014e2682a4a6526524e69cf9b
+Upstream generation: magick -size 64x64 xc:lime heic:-
+
+MIT License
+
+Copyright (c) 2026 openclaw
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

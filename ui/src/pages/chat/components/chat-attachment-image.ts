@@ -28,6 +28,13 @@ export function canResizeChatAttachment(file: File): boolean {
   return file.type === "image/png";
 }
 
+export function isHeicChatAttachment(file: Pick<File, "type" | "name">): boolean {
+  return (
+    /^image\/hei[cf](?:-sequence)?$/i.test(file.type) ||
+    ((!file.type || file.type === "application/octet-stream") && /\.hei[cf]$/i.test(file.name))
+  );
+}
+
 async function checkResizeSource(file: File, signal: AbortSignal): Promise<void> {
   const header = new DataView(await file.slice(0, 33).arrayBuffer());
   signal.throwIfAborted();
@@ -75,23 +82,30 @@ export type ChatAttachmentImageRequest = { file: File; maxBytes: number };
 // competing with typing. Each task owns its worker so abort stops native work.
 let preparationQueue = Promise.resolve();
 
-export async function resizeChatAttachmentImage(
+export async function prepareChatAttachmentImage(
   file: File,
   maxBytes: number,
   signal: AbortSignal,
   onProcessingChange: (processing: boolean) => void,
 ): Promise<File> {
   signal.throwIfAborted();
-  await checkResizeSource(file, signal);
+  const heic = isHeicChatAttachment(file);
+  if (!heic) {
+    await checkResizeSource(file, signal);
+  }
   // Queue wait is not a stalled read. Each worker gets the full read watchdog.
   onProcessingChange(false);
   const prepared = preparationQueue.then(() => {
     signal.throwIfAborted();
     onProcessingChange(true);
     return new Promise<File>((resolve, reject) => {
-      const worker = new Worker(new URL("./chat-attachment-image.worker.ts", import.meta.url), {
-        type: "module",
-      });
+      const worker = heic
+        ? new Worker(new URL("./chat-attachment-heic.worker.ts", import.meta.url), {
+            type: "module",
+          })
+        : new Worker(new URL("./chat-attachment-image.worker.ts", import.meta.url), {
+            type: "module",
+          });
       const listeners = new AbortController();
       let settled = false;
       const finish = (result: File | null) => {

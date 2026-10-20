@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { expect, it } from "vitest";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { attachmentImage } from "./chat-attachment-menu.test-support.ts";
@@ -6,6 +8,68 @@ import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts"
 const suite = createControlUiE2eSuite({ name: "Mobile attachment errors" });
 
 suite.define(() => {
+  it("previews HEIC photos before sending them as JPEG", () =>
+    suite.withPage({ viewport: { width: 1050, height: 764 } }, async ({ page }) => {
+      const gateway = await installMockGateway(page);
+      await page.goto(suite.server.baseUrl + "chat");
+      const buffer = Buffer.from(
+        await readFile("test/fixtures/media/green.heic.base64", "utf8"),
+        "base64",
+      );
+      await page.locator(".agent-chat__file-input").setInputFiles([
+        { name: "holiday-photo.heic", mimeType: "image/heic", buffer },
+        { name: "second-photo.HEIF", mimeType: "application/octet-stream", buffer },
+      ]);
+      const rail = page.locator(".chat-attachments-preview");
+      await expect.poll(() => rail.locator('[aria-busy="false"]').count()).toBe(2);
+      expect(await rail.locator("img").count()).toBe(2);
+      expect(
+        await rail.locator("img").evaluateAll(async (images: HTMLImageElement[]) => {
+          return await Promise.all(
+            images.map(async (image) => {
+              await image.decode();
+              return [image.naturalWidth, image.naturalHeight];
+            }),
+          );
+        }),
+      ).toEqual([
+        [64, 64],
+        [64, 64],
+      ]);
+      await page.screenshot({
+        path: path.join(suite.artifactDir, "heic-pending.png"),
+        animations: "disabled",
+      });
+      await rail.getByRole("button", { name: "Open image holiday-photo.jpg", exact: true }).click();
+      const lightbox = page.locator("openclaw-image-lightbox");
+      await lightbox.getByRole("dialog").waitFor({ state: "visible" });
+      await lightbox.locator("img.image").evaluate((image: HTMLImageElement) => image.decode());
+      await lightbox.getByRole("button", { name: "Close image preview", exact: true }).click();
+      await page
+        .getByRole("textbox", { name: "Chat composer", exact: true })
+        .fill("Inspect this photo.");
+      await page.getByRole("button", { name: "Send message", exact: true }).click();
+      await expect
+        .poll(() => gateway.getRequests("chat.send"))
+        .toMatchObject([
+          {
+            params: {
+              attachments: [
+                {
+                  fileName: "holiday-photo.jpg",
+                  mimeType: "image/jpeg",
+                  content: expect.any(String),
+                },
+                {
+                  fileName: "second-photo.jpg",
+                  mimeType: "image/jpeg",
+                  content: expect.any(String),
+                },
+              ],
+            },
+          },
+        ]);
+    }));
   it.each(["chat", "new"])("keeps rejected files readable and removable in %s", (route) =>
     suite.withPage(
       { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true },
