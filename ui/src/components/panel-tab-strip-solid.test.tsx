@@ -6,33 +6,26 @@ import { mountSolid } from "../test-helpers/mount-solid.ts";
 import { flush } from "../test-helpers/solid-settle.ts";
 import { PanelTabStrip, type SolidPanelTabStripTab } from "./panel-tab-strip-solid.tsx";
 
-function makeTab(id: string, label: string): SolidPanelTabStripTab {
-  return { id, domId: `tab-${id}`, label, closeLabel: `Close ${id}` };
-}
-const first = makeTab("first", "First"),
-  second = makeTab("second", "Second");
+const first = { id: "a", domId: "a", label: "A", closeLabel: "Close A" };
+const second = { id: "b", domId: "b", label: "B", closeLabel: "Close B" };
 function mountStrip(
-  initial = [first, second],
+  initial: SolidPanelTabStripTab[] = [first, second],
   onReorder?: Parameters<typeof PanelTabStrip>[0]["onReorder"],
 ) {
-  const [tabs, setTabs] = createSignal(initial);
-  const [activeId, setActiveId] = createSignal<string | null>(initial[0]?.id ?? null);
   const callbacks = { onSelect: vi.fn(), onClose: vi.fn(), onNew: vi.fn() };
-  const view = mountSolid(() => (
-    <PanelTabStrip
-      tabs={tabs()}
-      activeId={activeId()}
-      ariaControls="panel"
-      {...callbacks}
-      onReorder={onReorder}
-      newLabel="New tab"
-    />
-  ));
+  const [props, setProps] = createSignal({
+    tabs: initial,
+    activeId: initial[0]?.id ?? null,
+    ariaControls: "panel",
+    ...callbacks,
+    onReorder,
+    newLabel: "New tab",
+  });
+  const view = mountSolid(() => <PanelTabStrip {...props()} />);
   const query = (selector: string) => view.container.querySelector<HTMLElement>(selector);
-  const button = (id: string) => view.container.querySelector<HTMLButtonElement>(`#tab-${id}`)!;
-  const update = (next: SolidPanelTabStripTab[], active = activeId()) => {
-    setTabs(next);
-    setActiveId(active);
+  const button = (id: string) => view.container.querySelector<HTMLButtonElement>(`#${id}`)!;
+  const update = (next: SolidPanelTabStripTab[], active = props().activeId) => {
+    setProps((current) => ({ ...current, tabs: next, activeId: active }));
     flush();
   };
   return { ...view, ...callbacks, button, query, update };
@@ -45,17 +38,16 @@ afterEach(() => {
 
 it("preserves keyed nodes, controlled selection, and updated labels", () => {
   const { button, update, onSelect, container } = mountStrip();
-  const firstNode = button("first"),
-    secondNode = button("second");
+  const [firstNode, secondNode] = [button("a"), button("b")] as const;
   firstNode.click();
   expect(onSelect).not.toHaveBeenCalled();
   secondNode.click();
-  expect(onSelect).toHaveBeenCalledExactlyOnceWith("second");
-  update([{ ...second, label: "Renamed second" }, first], "second");
+  expect(onSelect).toHaveBeenCalledExactlyOnceWith("b");
+  update([{ ...second, label: "Renamed second" }, first], "b");
   expect([...container.querySelectorAll('[role="tab"]')]).toEqual([secondNode, firstNode]);
   expect(secondNode).toMatchObject({ textContent: expect.stringContaining("Renamed second") });
   expect(secondNode.getAttribute("aria-selected")).toBe("true");
-  expect([button("second-close").tabIndex, button("first-close").tabIndex]).toEqual([0, -1]);
+  expect([button("b-close").tabIndex, button("a-close").tabIndex]).toEqual([0, -1]);
   secondNode.click();
   expect(onSelect).toHaveBeenCalledOnce();
 });
@@ -76,7 +68,7 @@ it("creates the group only for populated lists and slots the new-tab action", ()
 it("separates activation, keyboard repeat, and middle-click close", () => {
   const onActivate = vi.fn();
   const { button, onClose, onSelect } = mountStrip([first, { ...second, onActivate }]);
-  const tab = button("second");
+  const tab = button("b");
   tab.click();
   for (const key of ["Enter", " "]) {
     const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
@@ -92,12 +84,9 @@ it("separates activation, keyboard repeat, and middle-click close", () => {
 });
 
 it("disables both close gestures without disabling selection", () => {
-  const { button, update, onClose, onSelect } = mountStrip([
-    first,
-    { ...second, closeDisabled: true },
-  ]);
-  const tab = button("second"),
-    close = button("second-close");
+  const tabs = [first, { ...second, closeDisabled: true }];
+  const { button, update, onClose, onSelect } = mountStrip(tabs);
+  const [tab, close] = [button("b"), button("b-close")] as const;
   expect(close.disabled).toBe(true);
   close.click();
   tab.dispatchEvent(new MouseEvent("auxclick", { button: 1 }));
@@ -114,8 +103,7 @@ it.each(["ltr", "rtl"])("uses the same %s edge for drag preview and reorder", (d
   document.documentElement.dir = direction;
   const onReorder = vi.fn();
   const { button, query } = mountStrip(undefined, onReorder);
-  const source = button("first"),
-    target = button("second");
+  const [source, target] = [button("a"), button("b")] as const;
   vi.spyOn(target, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 0, 80, 0));
   // jsdom does not resolve inherited direction through custom elements.
   target.style.direction = direction;
@@ -131,7 +119,7 @@ it.each(["ltr", "rtl"])("uses the same %s edge for drag preview and reorder", (d
   const placement = direction === "rtl" ? "after" : "before";
   expect(target.classList.contains(`is-drop-${placement}`)).toBe(true);
   drag(target, "drop");
-  expect(onReorder).toHaveBeenCalledExactlyOnceWith("first", "second", placement);
+  expect(onReorder).toHaveBeenCalledExactlyOnceWith("a", "b", placement);
   expect(query(".tabstrip")?.hasAttribute("data-dragged-panel-tab")).toBe(false);
   flush();
   expect(target.classList.contains(`is-drop-${placement}`)).toBe(false);

@@ -33,21 +33,20 @@ it("promotes itself on every connect and tracks document adoption", () => {
   const surface = document.createElement("openclaw-menu-surface");
   const showPopover = vi.fn();
   surface.showPopover = showPopover;
-  document.body.append(surface);
-  expect(surface.getAttribute("popover")).toBe("manual");
-  expect(showPopover).toHaveBeenCalledTimes(1);
-  expect(surface.matches(":popover-open")).toBe(false);
-  expect(hasMenuSurface(document)).toBe(true);
-  surface.remove();
-  expect(hasMenuSurface(document)).toBe(false);
-  document.body.append(surface);
-  expect(showPopover).toHaveBeenCalledTimes(2);
-  expect(hasMenuSurface(document)).toBe(true);
   const otherDocument = document.implementation.createHTMLDocument();
-  otherDocument.body.append(surface);
-  expect([hasMenuSurface(document), hasMenuSurface(otherDocument)]).toEqual([false, true]);
-  surface.remove();
-  expect(hasMenuSurface(otherDocument)).toBe(false);
+  for (const [move, calls, here, there] of [
+    [() => document.body.append(surface), 1, true, false],
+    [() => surface.remove(), 1, false, false],
+    [() => document.body.append(surface), 2, true, false],
+    [() => otherDocument.body.append(surface), 3, false, true],
+    [() => surface.remove(), 3, false, false],
+  ] as const) {
+    move();
+    expect(showPopover).toHaveBeenCalledTimes(calls);
+    expect([hasMenuSurface(document), hasMenuSurface(otherDocument)]).toEqual([here, there]);
+  }
+  expect(surface.getAttribute("popover")).toBe("manual");
+  expect(surface.matches(":popover-open")).toBe(false);
 });
 
 it("follows live positioned children of a zero-sized menu host", async () => {

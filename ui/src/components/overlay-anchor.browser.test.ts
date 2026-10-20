@@ -194,7 +194,7 @@ it.each([
   expect(surface.style.getPropertyValue("position-anchor")).toBe("auto");
 });
 
-it("reanchors named HTML to cross-root SVG without reopening", async () => {
+it("reanchors to cross-root SVG without reopening or blocking clicks", async () => {
   const first = anchor(document.body),
     second = anchor(shadow("closed"), true);
   const { surface, owner, binding } = popup(document.body, first);
@@ -213,17 +213,10 @@ it("reanchors named HTML to cross-root SVG without reopening", async () => {
   expect(owner).toMatchObject({ open: true, phase: "open" });
   expect(shown).toHaveBeenCalledOnce();
   expect(first.style.getPropertyValue("anchor-name")).toBe("--author-anchor");
-});
-
-it("paints and delivers a real click with an invisible proxy and SVG anchor", async () => {
-  const element = anchor(shadow("closed"), true);
-  const { surface, owner } = popup(document.body, element);
   const action = append(surface, "button"),
     clicked = vi.fn();
   action.textContent = "Activate anchored action";
   action.addEventListener("click", clicked);
-  await open(owner);
-  expectAnchored(surface, element);
   const box = action.getBoundingClientRect();
   expect(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)).toBe(action);
   await userEvent.click(action);

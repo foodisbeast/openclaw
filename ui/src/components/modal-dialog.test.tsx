@@ -36,36 +36,25 @@ afterEach(() => {
   restoreDialogPolyfill();
   vi.unstubAllGlobals();
 });
-async function renderModal() {
-  mountSolid(
-    () => (
-      <openclaw-modal-dialog
-        label="Confirm action"
-        description="Review the operation before continuing."
-      >
-        <button id="first-action">First</button>
-      </openclaw-modal-dialog>
-    ),
-    { container },
-  );
+function mountModal(content: string, focus?: string) {
+  const modal = document.createElement("openclaw-modal-dialog");
+  modal.label = "Fixture";
+  modal.innerHTML = content;
+  if (focus) {
+    modal.initialFocus = () => modal.querySelector<HTMLElement>(focus);
+  }
+  mountSolid(() => modal, { container });
+  return modal;
+}
+function renderModal() {
+  mountModal('<button id="first-action">First</button>');
   return getRenderedModalDialog(container);
 }
 function mountFocusModal(media = false) {
-  mountSolid(
-    () => (
-      <openclaw-modal-dialog
-        label={media ? "Media" : "Edit"}
-        prop:initialFocus={() =>
-          container.querySelector<HTMLElement>(media ? "button" : "textarea")
-        }
-      >
-        <button autofocus>{media ? "Close" : "Other action"}</button>
-        {media ? <video controls tabindex="0" /> : <textarea autofocus />}
-      </openclaw-modal-dialog>
-    ),
-    { container },
-  );
-  return container.querySelector("openclaw-modal-dialog")!;
+  const content = media
+    ? '<button autofocus>Close</button><video controls tabindex="0"></video>'
+    : "<button autofocus>Other action</button><textarea autofocus></textarea>";
+  return mountModal(content, media ? "button" : "textarea");
 }
 
 it.each(["initial", "reopened"])("rejects disconnected %s layers", async (state) => {

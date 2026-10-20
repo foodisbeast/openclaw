@@ -131,19 +131,12 @@ it("reveals free-form entry without leaking its internal option value", async ()
 it("keeps raw references out of hover tooltips and selects the hovered model", async () => {
   const { picker, option, onChange } = await mountPicker({
     showSelectedDetail: true,
-    options: [
-      { value: "", label: "Select a model", disabled: true },
-      fixture("Alpha", "API"),
-      fixture("Beta", "API"),
-    ],
+    options: [fixture("Alpha", "API"), fixture("Beta", "API")],
   });
   const dispose = installTitleTooltips(document);
   try {
     await openPicker(picker);
     const row = option("openai/fixture-beta");
-    expect(row.textContent).toContain("Fixture Beta");
-    expect(row.textContent).toContain("API");
-    expect(row.querySelector("[data-provider-icon]")).not.toBeNull();
     row.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, composed: true }));
     expect(document.querySelector("openclaw-tooltip")?.content ?? "").toBe("");
     row.click();

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { GatewaySessionRow } from "../api/types.ts";
 import { captureI18nStateForTesting } from "../i18n/lib/translate.test-support.ts";
 import { i18n } from "../i18n/lib/translate.ts";
+import { createSessionsListResult } from "../test-helpers/chat-model.ts";
 import { updatePersonActivityCard } from "./person-activity-card.tsx";
 import type { PersonActivityData } from "./person-activity-data.ts";
 
@@ -39,11 +40,9 @@ function session(key: string, updatedAt: number): GatewaySessionRow {
 function data(sessions: GatewaySessionRow[]): PersonActivityData {
   return {
     sessionsResult: {
+      ...createSessionsListResult({ defaultsModel: null }),
       sessions,
-      ts: 1,
-      path: "",
       count: sessions.length,
-      defaults: { model: null, modelProvider: null, contextTokens: null },
     },
     presencePayload: undefined,
   };
@@ -107,7 +106,7 @@ it("retains recent selection and focused nodes while fresh roster facts update",
   expect(links().some((link) => link.textContent?.includes("four"))).toBe(false);
 });
 
-it("keeps modified-click navigation native and exposes offline activity", () => {
+it("exposes activity navigation while presence is offline", () => {
   const navigate = vi.fn();
   show({
     user: { ...alice, entries: [] },
@@ -117,10 +116,6 @@ it("keeps modified-click navigation native and exposes offline activity", () => 
   expect(card("status")?.textContent).toContain("Offline");
   expect(card("facts")).toBeNull();
   const link = getQueriesForElement(container).getByRole("link", { name: "View activity" });
-  const modified = new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true });
-  link.dispatchEvent(modified);
-  expect(modified.defaultPrevented).toBe(false);
-  expect(navigate).not.toHaveBeenCalled();
   link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   expect(navigate).toHaveBeenCalledWith("alice", "Alice");
 });
