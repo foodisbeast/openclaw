@@ -139,7 +139,7 @@ describe("settled post-tool turn finalization context", () => {
       expect(userMessages[0]).not.toHaveProperty("display", false);
       for (const message of userMessages.slice(1)) {
         expect(message).toMatchObject({
-          content: expect.stringContaining("Your turn ended without a final reply."),
+          content: expect.stringContaining("final user-visible answer"),
           display: false,
           provenance: { kind: "internal_system" },
         });
