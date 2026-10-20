@@ -4752,7 +4752,6 @@
 ["src/cli/plugins-install-preflight-config.test.ts","../config/config.js","78f24d7ac3b562c4ef31f6eed48f7c63cef79367041a724c15ca46618c3ed9f9",1]
 ["src/cli/plugins-install-preflight-config.test.ts","../plugins/marketplace.js","cfad477ac3067c88a025e2a63c108ec1c3f2857d19b82b60708fe39f687f86fa",1]
 ["src/cli/plugins-install-preflight.test.ts","../plugins/plugin-lifecycle-lease.js","d0b70b5e0abd9787cd518242842a3eec5c0ff821ee5e9787e04bf8ed6dcfbc49",1]
-["src/cli/plugins-lifecycle-client.test.ts","../config/config.js","c8c918904dbc7a10f55f189c48c2de3c30d502f8a8a4cc2f3a87bc1b693f6a01",1]
 ["src/cli/plugins-lifecycle-client.test.ts","../infra/gateway-lock.js","ad40c0e4a768066f959ae65e5abf45bb02c76615a869cae69c83602e9b5373d8",1]
 ["src/cli/plugins-list-command.test.ts","../../packages/terminal-core/src/table.js","4805e363c7d16d27b4aa14e22cd2066f08fd6d45b7de8b72b703839681d57a56",1]
 ["src/cli/plugins-list-command.test.ts","../../packages/terminal-core/src/theme.js","aad1ca4bda171d0e0bee842385410353d67c1dccb7e2b49e135fffc15715d84c",1]
