@@ -1,7 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mocks, resetResolutionMocks } from "./agent-delivery.resolution.test-support.js";
-
 import type { OpenClawConfig } from "../../config/config.js";
+import { mocks, resetResolutionMocks } from "./agent-delivery.resolution.test-support.js";
 
 let resolveAgentDeliveryPlanWithSessionRoute: typeof import("./agent-delivery.js").resolveAgentDeliveryPlanWithSessionRoute;
 let resolveAgentOutboundTarget: typeof import("./agent-delivery.js").resolveAgentOutboundTarget;
