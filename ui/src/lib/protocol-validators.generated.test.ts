@@ -99,10 +99,18 @@ const fixtures: Array<[keyof typeof checks, TSchema, unknown, unknown]> = [
       sessionKey: "agent:main:dashboard",
       revision: 1,
       tabs: [{ tabId: "overview", title: "Overview", position: 0, chatDock: "right" }],
-      widgets: [{
-        name: "chart", tabId: "overview", contentKind: "html", sizeW: 12, sizeH: 8,
-        position: 0, grantState: "none", revision: 1,
-      }],
+      widgets: [
+        {
+          name: "chart",
+          tabId: "overview",
+          contentKind: "html",
+          sizeW: 12,
+          sizeH: 8,
+          position: 0,
+          grantState: "none",
+          revision: 1,
+        },
+      ],
     },
     { sessionKey: "agent:main:dashboard", revision: 1, tabs: [], widgets: [{}] },
   ],
