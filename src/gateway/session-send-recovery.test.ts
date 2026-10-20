@@ -173,7 +173,7 @@ const sourceSnapshot = (
   assertCurrent() {},
 });
 const storeTarget = (key: string) => ({
-  agentId: "main",
+  agentId: key.split(":")[1]!,
   canonicalKey: key,
   storePath: "/fixture/sessions.json",
   store: { [key]: key === delivery.source.sessionKey ? sourceEntry : targetEntry },
@@ -252,10 +252,6 @@ it("recovers a logical agent's saved input from its shared physical store", asyn
   ]);
   io.pending.mockResolvedValue({ items: [sharedInput], total: 1 });
   io.source.mockResolvedValue(sourceSnapshot(sharedInput));
-  io.load.mockImplementation(async ({ key }: { key: string }) => ({
-    ...storeTarget(key),
-    agentId: key === sharedDelivery.target.sessionKey ? "secondary" : "main",
-  }));
   await recover();
   expect(dispatch).toHaveBeenCalledOnce();
   expect(dispatch.mock.calls[0]![0]).toMatchObject({
@@ -556,10 +552,14 @@ it.each(["replaced", "archived-source", "archived-target"] as const)(
   },
 );
 
-it("replays different sessions concurrently while preserving each saved input order", async ({
+it("replays sessions across stores concurrently while preserving each saved input order", async ({
   signal,
 }) => {
-  const sessions = Array.from({ length: 6 }, (_, index) => `agent:main:target-${index}`);
+  const agents = ["main", "secondary"];
+  const sessions = Array.from(
+    { length: 6 },
+    (_, index) => `agent:${agents[Math.floor(index / 3)]}:target-${index}`,
+  );
   const inputs = sessions.map((sessionKey, index) =>
     Array.from({ length: 2 }, (_, sequence) => {
       const runId = `delivery-${index}-${sequence}`;
@@ -575,14 +575,21 @@ it("replays different sessions concurrently while preserving each saved input or
               ...delivery,
               runId,
               operatorSource: null,
-              target: { ...delivery.target, sessionKey },
+              target: { ...delivery.target, sessionKey, agentId: sessionKey.split(":")[1]! },
             },
           },
         },
       };
     }),
   );
-  io.entries.mockResolvedValue(sessions.map((sessionKey) => ({ sessionKey, entry: targetEntry })));
+  io.discover.mockResolvedValue(
+    agents.map((agentId) => ({ agentId, storePath: `/fixture/${agentId}/sessions.json` })),
+  );
+  io.entries.mockImplementation(async ({ agentId }) =>
+    sessions
+      .filter((sessionKey) => sessionKey.startsWith(`agent:${agentId}:`))
+      .map((sessionKey) => ({ sessionKey, entry: targetEntry })),
+  );
   io.pending.mockImplementation(async ({ sessionKey }) => ({
     items: inputs[sessions.indexOf(sessionKey)],
   }));
