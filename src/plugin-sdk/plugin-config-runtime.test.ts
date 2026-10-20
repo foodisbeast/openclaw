@@ -5,16 +5,13 @@ import { normalizePluginsConfig as readNormalizedPluginsConfig } from "../plugin
 import type { OpenClawConfig } from "./config-contracts.js";
 import * as runtime from "./plugin-config-runtime.js";
 
-afterEach(() => {
-  snapshots.clearRuntimeConfigSnapshot();
-  vi.restoreAllMocks();
-});
+afterEach(() => snapshots.clearRuntimeConfigSnapshot());
 const configFor = (entries: NonNullable<OpenClawConfig["plugins"]>["entries"]): OpenClawConfig => ({
   plugins: { entries },
 });
 
 it("reuses captured plugin policy across reads and keeps revisions independent", () => {
-  const normalize = vi.spyOn(normalization, "normalizePluginsConfigWithResolverCore");
+  using normalize = vi.spyOn(normalization, "normalizePluginsConfigWithResolverCore");
   const config = configFor({ " CODEX ": { config: { revision: 1 } } });
   snapshots.setRuntimeConfigSnapshot(config);
   const captured = snapshots.getRuntimeConfigSnapshot({ capture: true })!;

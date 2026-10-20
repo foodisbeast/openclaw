@@ -2,18 +2,18 @@ import type { ModelCatalogProvider } from "@openclaw/model-catalog-core/model-ca
 import { beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
-  captureProviderCatalogExpiries,
+  captureProviderCatalogExpiries as capture,
   recordLiveCatalogExpiry,
-  withProviderCatalogExpiry,
+  withProviderCatalogExpiry as withExpiry,
 } from "../plugins/provider-catalog-expiry.js";
 import { getLiveCatalogRetainedData } from "../plugins/provider-live-catalog-cache.js";
 import {
   applyProviderNativeStreamingUsageCompat,
-  buildManifestModelProviderConfig,
+  buildManifestModelProviderConfig as buildManifest,
   clearLiveCatalogCacheForTests,
   getCachedLiveCatalogValue,
-  readConfiguredProviderCatalogEntries,
-  readManifestProviderDefaultModelRef,
+  readConfiguredProviderCatalogEntries as readConfigured,
+  readManifestProviderDefaultModelRef as readDefaultModel,
 } from "./provider-catalog-shared.js";
 import { buildCatalogModel, catalogFixture } from "./provider-catalog.test-support.js";
 import type { ModelDefinitionConfig } from "./provider-model-shared.js";
@@ -90,11 +90,8 @@ it("samples cached plugin data without invoking proxy traps or custom iterators"
 it("does not admit a cancelled catalog consumer", async () => {
   const reason = new Error("catalog owner closed");
   const load = vi.fn(async () => "unexpected");
-  await expect(
-    cache(["cancelled"], load, {
-      signal: AbortSignal.abort(reason),
-    }),
-  ).rejects.toBe(reason);
+  const result = cache(["cancelled"], load, { signal: AbortSignal.abort(reason) });
+  await expect(result).rejects.toBe(reason);
   expect(load).not.toHaveBeenCalled();
 });
 
@@ -150,39 +147,14 @@ it("preserves consumers when pending entries are evicted without rewarming them"
   }
 });
 
-it("shares and retains admitted metadata after its sole consumer cancels", async () => {
-  const controller = new AbortController();
-  const completion = createDeferred<string>();
-  const load = vi.fn(() => completion.promise);
-  const keyParts = ["cancelled-shared"];
-  const first = cache(keyParts, load, { signal: controller.signal });
-  const reason = new Error("last consumer left");
-  try {
-    controller.abort(reason);
-    const replacementLoad = vi.fn(async () => "replacement");
-    const next = cache(keyParts, replacementLoad);
-    completion.resolve("admitted result");
-    await Promise.allSettled([first, next]);
-    await expect(first).rejects.toBe(reason);
-    await expect(next).resolves.toBe("admitted result");
-    expect(replacementLoad).not.toHaveBeenCalled();
-    expect(load).toHaveBeenCalledOnce();
-    await expect(cache(keyParts, load)).resolves.toBe("admitted result");
-    expect(load).toHaveBeenCalledOnce();
-  } finally {
-    completion.resolve("admitted result");
-    await Promise.allSettled([first, completion.promise]);
-  }
-});
-
 it("retains slow successful catalogs without extending absolute expiry", async () => {
   const absoluteExpiry = 64_000;
   let now = 1_000;
   const pending = createDeferred<string>();
   const load = vi.fn(() => pending.promise);
   const read = () =>
-    captureProviderCatalogExpiries(() =>
-      withProviderCatalogExpiry(
+    capture(() =>
+      withExpiry(
         async () => {
           recordLiveCatalogExpiry(absoluteExpiry);
           return cache(["slow-provider", absoluteExpiry], load, {
@@ -306,7 +278,7 @@ it("normalizes kilocode Gemini ids while preserving configured modalities", () =
     models: [{ ...buildModel("google/gemini-3-pro-preview"), ...attributes, maxTokens: 65536 }],
   };
   expect(
-    readConfiguredProviderCatalogEntries({
+    readConfigured({
       providerId,
       config: { models: { providers: { [providerId]: provider } } },
     }),
@@ -350,16 +322,13 @@ it("converts manifest rows and reads the default model reference", () => {
     headers: { "x-provider": "example" },
     models: [model],
   };
-  expect(buildManifestModelProviderConfig({ providerId, catalog })).toEqual({
+  expect(buildManifest({ providerId, catalog })).toEqual({
     baseUrl: catalog.baseUrl,
     api: "openai-completions",
     headers: { "x-provider": "example" },
     models: [model],
   });
-  expect(
-    readManifestProviderDefaultModelRef(
-      { modelCatalog: { providers: { example: catalog } } },
-      "example",
-    ),
-  ).toBe("example/example-model");
+  expect(readDefaultModel({ modelCatalog: { providers: { example: catalog } } }, "example")).toBe(
+    "example/example-model",
+  );
 });

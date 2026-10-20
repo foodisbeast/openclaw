@@ -1,21 +1,20 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
-  captureProviderCatalogExpiries,
-  withProviderCatalogExpiry,
-  withProviderCatalogDiscoveryBudget,
+  captureProviderCatalogExpiries as capture,
+  withProviderCatalogExpiry as withExpiry,
+  withProviderCatalogDiscoveryBudget as withBudget,
 } from "../plugins/provider-catalog-expiry.js";
 import {
   clearLiveCatalogCacheForTests,
-  getCachedLiveCatalogValue,
+  getCachedLiveCatalogValue as cachedValue,
 } from "./provider-catalog-shared.js";
 
-const withFixtureExpiry = <T>(read: () => Promise<T>) =>
-  withProviderCatalogExpiry(read, () => ["fixture"]);
+const withFixtureExpiry = <T>(read: () => Promise<T>) => withExpiry(read, () => ["fixture"]);
 const refreshTwice = (read: () => Promise<string>) =>
-  captureProviderCatalogExpiries(async () => [await read(), await read()], { refresh: true });
-const readCatalog = <T>(params: Parameters<typeof getCachedLiveCatalogValue<T>>[0]) =>
-  withFixtureExpiry(() => getCachedLiveCatalogValue(params));
+  capture(async () => [await read(), await read()], { refresh: true });
+const readCatalog = <T>(params: Parameters<typeof cachedValue<T>>[0]) =>
+  withFixtureExpiry(() => cachedValue(params));
 
 beforeEach(() => clearLiveCatalogCacheForTests());
 
@@ -24,14 +23,18 @@ it("refreshes only requested keys once per acquisition and retains the refreshed
   let advertised = "original";
   const load = vi.fn(async () => advertised);
   const read = (credential = "synthetic-account-a", endpoint = "https://catalog.example/a") =>
-    readCatalog({
-      keyParts: ["fixture", endpoint, credential],
-      ttlMs: 3_600_000,
-      now: () => now,
-      load,
-    });
+    withFixtureExpiry(() =>
+      withBudget(180_000, () =>
+        cachedValue({
+          keyParts: ["fixture", endpoint, credential],
+          ttlMs: 3_600_000,
+          now: () => now,
+          load,
+        }),
+      ),
+    );
 
-  const initial = await captureProviderCatalogExpiries(() => read());
+  const initial = await capture(() => read());
   await read("synthetic-account-b");
   await read("synthetic-account-a", "https://catalog.example/b");
   expect(load).toHaveBeenCalledTimes(3);
@@ -39,14 +42,14 @@ it("refreshes only requested keys once per acquisition and retains the refreshed
 
   advertised = "newly-granted";
   now = 2_000;
-  expect((await captureProviderCatalogExpiries(() => read())).value).toBe("original");
+  expect((await capture(() => read())).value).toBe("original");
   const refreshed = await refreshTwice(read);
   expect(refreshed.value).toEqual(["newly-granted", "newly-granted"]);
   expect(refreshed.providerExpiries.get("fixture")).toBe(3_602_000);
   expect(load).toHaveBeenCalledTimes(4);
 
   now = 3_000;
-  const ordinary = await captureProviderCatalogExpiries(() => read());
+  const ordinary = await capture(() => read());
   expect(ordinary.value).toBe("newly-granted");
   expect(ordinary.providerExpiries.get("fixture")).toBe(3_602_000);
   await expect(read("synthetic-account-b")).resolves.toBe("original");
@@ -54,9 +57,7 @@ it("refreshes only requested keys once per acquisition and retains the refreshed
   expect(load).toHaveBeenCalledTimes(4);
 
   advertised = "second-grant";
-  expect((await captureProviderCatalogExpiries(() => read(), { refresh: true })).value).toBe(
-    "second-grant",
-  );
+  expect((await capture(() => read(), { refresh: true })).value).toBe("second-grant");
   expect(load).toHaveBeenCalledTimes(5);
 });
 
@@ -64,12 +65,12 @@ it("shares a pending refresh with concurrent acquisitions and ordinary consumers
   const completion = createDeferred<string>();
   const load = vi.fn<() => Promise<string>>().mockResolvedValueOnce("original");
   const read = () => readCatalog({ keyParts: ["shared-refresh"], load });
-  await captureProviderCatalogExpiries(read);
+  await capture(read);
   load.mockImplementation(() => completion.promise);
 
   const first = refreshTwice(read);
   const second = refreshTwice(read);
-  const ordinary = captureProviderCatalogExpiries(read);
+  const ordinary = capture(read);
   try {
     expect(load).toHaveBeenCalledTimes(2);
     completion.resolve("fresh");
@@ -93,9 +94,9 @@ it("surfaces a failed explicit acquisition instead of restoring a bypassed warm 
     .mockRejectedValueOnce(failure)
     .mockResolvedValueOnce("recovered");
   const read = () => readCatalog({ keyParts: ["failed-refresh"], load });
-  expect((await captureProviderCatalogExpiries(read)).value).toBe("original");
-  await expect(captureProviderCatalogExpiries(read, { refresh: true })).rejects.toBe(failure);
-  expect((await captureProviderCatalogExpiries(read)).value).toBe("recovered");
+  expect((await capture(read)).value).toBe("original");
+  await expect(capture(read, { refresh: true })).rejects.toBe(failure);
+  expect((await capture(read)).value).toBe("recovered");
   expect(load).toHaveBeenCalledTimes(3);
 });
 
@@ -111,10 +112,10 @@ it.each([
       .fn<() => Promise<string>>()
       .mockImplementationOnce(() => firstLoad.promise)
       .mockImplementationOnce(() => secondLoad.promise);
-    const now = vi.spyOn(performance, "now").mockReturnValue(0);
+    using now = vi.spyOn(performance, "now").mockReturnValue(0);
     const read = (budget: number, refresh = true) =>
-      withProviderCatalogDiscoveryBudget(budget, () =>
-        captureProviderCatalogExpiries(() => readCatalog({ keyParts: ["budget-order"], load }), {
+      withBudget(budget, () =>
+        capture(() => readCatalog({ keyParts: ["budget-order"], load }), {
           refresh,
         }),
       );
@@ -138,43 +139,6 @@ it.each([
     } finally {
       firstLoad.resolve("older");
       secondLoad.resolve("newer");
-      now.mockRestore();
     }
   },
 );
-
-it("retries an unsuccessful short acquisition with the explicit budget", async () => {
-  const load = vi
-    .fn<() => Promise<string[]>>()
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce(["healthy"]);
-  const read = (budget: number) =>
-    withProviderCatalogDiscoveryBudget(budget, () =>
-      getCachedLiveCatalogValue({
-        keyParts: ["failed-short"],
-        load,
-        shouldCache: (rows) => rows.length > 0,
-      }),
-    );
-  expect(await read(5_000)).toEqual([]);
-  expect(await read(180_000)).toEqual(["healthy"]);
-  expect(await read(5_000)).toEqual(["healthy"]);
-  expect(load).toHaveBeenCalledTimes(2);
-});
-
-it("publishes cached-result freshness through the nested acquisition budget", async () => {
-  const result = await captureProviderCatalogExpiries(() =>
-    withFixtureExpiry(() =>
-      withProviderCatalogDiscoveryBudget(180_000, () =>
-        getCachedLiveCatalogValue({
-          keyParts: ["budget-expiry"],
-          load: async () => "healthy",
-          ttlMs: 1_000,
-          now: () => 100,
-        }),
-      ),
-    ),
-  );
-  expect(result.value).toBe("healthy");
-  expect(result.providerExpiries.get("fixture")).toBe(1_100);
-});

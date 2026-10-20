@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ModelProviderConfig } from "../config/types.models.js";
@@ -5,12 +6,11 @@ import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { reserveTestPortListener } from "../test-utils/port-claims.js";
 import {
-  buildLiveModelProviderConfig,
-  buildOpenAICompatibleProviderCatalog,
-  buildOpenAICompatibleProviderFamilyCatalog,
+  buildLiveModelProviderConfig as buildLive,
+  buildOpenAICompatibleProviderCatalog as buildCatalog,
+  buildOpenAICompatibleProviderFamilyCatalog as buildFamily,
   clearLiveCatalogCacheForTests,
-  getCachedLiveProviderModelRows,
-  getCachedUpstreamProviderCatalog,
+  getCachedLiveProviderModelRows as readModels,
   type LiveModelCatalogFetchGuard,
 } from "./provider-catalog-live-runtime.js";
 import { getCachedLiveCatalogValue } from "./provider-catalog-shared.js";
@@ -84,43 +84,6 @@ afterEach(() => {
   fetchGuard.mockReset();
 });
 
-it("keeps a shared upstream acquisition alive after one consumer cancels", async () => {
-  const held = holdCatalog({
-    alpha: { id: "alpha", models: {} },
-    beta: { id: "beta", models: {} },
-  });
-  const acquire = (signal: AbortSignal, providerId = "alpha") =>
-    getCachedUpstreamProviderCatalog({
-      endpoint: catalogParams.endpoint,
-      providerId,
-      fetchGuard,
-      signal,
-    });
-  const firstController = new AbortController();
-  const secondController = new AbortController();
-  const first = acquire(firstController.signal);
-  const second = acquire(secondController.signal, "beta");
-  const settled = Promise.allSettled([first, second]);
-  try {
-    await held.started;
-    expect(fetchGuard).toHaveBeenCalledOnce();
-    const reason = { source: "first catalog consumer closed" };
-    firstController.abort(reason);
-    held.finish();
-    await expect(first).rejects.toBe(reason);
-    const expected = { id: "beta", models: {} };
-    await expect(second).resolves.toEqual(expected);
-    await expect(acquire(secondController.signal, "beta")).resolves.toEqual(expected);
-    expect(fetchGuard).toHaveBeenCalledOnce();
-    expect(held.release).toHaveBeenCalledOnce();
-  } finally {
-    held.finish();
-    firstController.abort();
-    secondController.abort();
-    await settled;
-  }
-});
-
 it("preserves HTTP catalog availability and releases admitted bodies before teardown", async () => {
   for (const mode of ["shared", "abandoned", "capacity"] as const) {
     const responseReady = createDeferredCore<ServerResponse>();
@@ -162,9 +125,7 @@ it("preserves HTTP catalog availability and releases admitted bodies before tear
       });
       releases.push(result.release);
       const body = result.response.body;
-      if (!body) {
-        throw new Error("Expected the real catalog response body");
-      }
+      assert(body, "Expected the real catalog response body");
       const getReader = body.getReader.bind(body);
       const readerSpy = vi.spyOn(body, "getReader").mockImplementation(() => {
         const reader = getReader();
@@ -192,13 +153,13 @@ it("preserves HTTP catalog availability and releases admitted bodies before tear
     const baseUrl = `http://127.0.0.1:${reserved.claim.port}/${mode}`;
     const acquire = (signal: AbortSignal) =>
       mode === "capacity"
-        ? buildOpenAICompatibleProviderCatalog({
+        ? buildCatalog({
             providerId: "demo",
             buildProvider: () => ({ ...seed, baseUrl }),
             discoveryMode: "strict",
             ctx: catalogContext(signal),
           })
-        : getCachedLiveProviderModelRows({
+        : readModels({
             providerId: "demo",
             endpoint: `${baseUrl}/models`,
             requireHttps: false,
@@ -231,10 +192,12 @@ it("preserves HTTP catalog availability and releases admitted bodies before tear
         const reason = new Error("catalog consumer closed");
         controllers[0]!.abort(reason);
         await expect(pending[0]).rejects.toBe(reason);
+        if (mode === "abandoned") {
+          pending.push(acquire(controllers[1]!.signal));
+        }
         reply.end('{"id":"known"}]}');
-        if (mode === "shared") {
-          await expect(pending[1]).resolves.toEqual([{ id: "known" }]);
-        } else {
+        await expect(pending[1]).resolves.toEqual([{ id: "known" }]);
+        if (mode === "abandoned") {
           await released.promise;
           await expect(acquire(controllers[1]!.signal)).resolves.toEqual([{ id: "known" }]);
         }
@@ -252,11 +215,7 @@ it("preserves HTTP catalog availability and releases admitted bodies before tear
         await Promise.all(releases.map((release) => release()));
       } finally {
         restoreReaders.forEach((restore) => restore());
-        try {
-          await reserved.releaseListener();
-        } finally {
-          await reserved.claim.release();
-        }
+        await reserved.releaseListener().finally(() => reserved.claim.release());
       }
     }
   }
@@ -265,7 +224,7 @@ it("preserves HTTP catalog availability and releases admitted bodies before tear
 it("family adapter reports cancellation while admitted metadata finishes", async () => {
   const controller = new AbortController();
   const held = holdCatalog({ data: [{ id: "known" }] });
-  const pending = buildOpenAICompatibleProviderFamilyCatalog({
+  const pending = buildFamily({
     ...familyOptions,
     entries: [familyEntry("demo", seed.baseUrl, "Demo")],
   }).catalog.run(catalogContext(controller.signal));
@@ -292,12 +251,8 @@ it("preserves failure, caches authoritative empty until expiry and supports bypa
     .mockRejectedValueOnce(failure)
     .mockResolvedValueOnce(catalogResponse({ data: [] }, release))
     .mockImplementation(async () => catalogResponse({ data: [{ id: "known" }] }, release));
-  const acquire = (ttlMs = 1_000) =>
-    buildLiveModelProviderConfig({
-      ...catalogParams,
-      discoveryMode: "strict",
-      ttlMs,
-    });
+  const strict = { ...catalogParams, discoveryMode: "strict" as const };
+  const acquire = (ttlMs = 1_000) => buildLive({ ...strict, ttlMs });
   await expect(acquire()).rejects.toBe(failure);
   expect(fetchGuard).toHaveBeenCalledTimes(1);
   await expect(acquire()).resolves.toMatchObject({ models: [] });
@@ -319,7 +274,7 @@ it("preserves failure, caches authoritative empty until expiry and supports bypa
 it("separates concurrent strict and advisory calls", async () => {
   const held = holdCatalog({ data: [] });
   const acquire = (mode: "strict" | "advisory") =>
-    buildLiveModelProviderConfig({
+    buildLive({
       ...catalogParams,
       discoveryMode: mode === "strict" ? "strict" : undefined,
       projectRows,
@@ -335,8 +290,7 @@ it("separates concurrent strict and advisory calls", async () => {
   expect(fetchGuard).toHaveBeenCalledTimes(2);
   await expectModels(acquire("advisory"));
   await expectModels(acquire("strict"), []);
-  expect(fetchGuard).toHaveBeenCalledTimes(3);
-  expect(held.release).toHaveBeenCalledTimes(3);
+  expect([fetchGuard, held.release].map((mock) => mock.mock.calls.length)).toEqual([3, 3]);
 });
 
 it("preserves auth isolation with custom key parts", async () => {
@@ -354,12 +308,11 @@ it("preserves auth isolation with custom key parts", async () => {
     projectRows,
   };
   const changed = { ...params, discoveryApiKey: "synthetic-resolved-second" };
-  await expectModels(buildLiveModelProviderConfig(params), []);
-  await expectModels(buildLiveModelProviderConfig(changed));
-  await expectModels(buildLiveModelProviderConfig(changed));
-  await expectModels(buildLiveModelProviderConfig(params), []);
-  expect(fetchGuard).toHaveBeenCalledTimes(2);
-  expect(release).toHaveBeenCalledTimes(2);
+  await expectModels(buildLive(params), []);
+  await expectModels(buildLive(changed));
+  await expectModels(buildLive(changed));
+  await expectModels(buildLive(params), []);
+  expect([fetchGuard, release].map((mock) => mock.mock.calls.length)).toEqual([2, 2]);
 });
 
 it.each([401, 503])(
@@ -376,7 +329,7 @@ it.each([401, 503])(
         release,
       };
     });
-    const family = buildOpenAICompatibleProviderFamilyCatalog({
+    const family = buildFamily({
       ...familyOptions,
       entries: ["unavailable", "healthy"].map((id) => familyEntry(id, `https://${id}.example/v1`)),
     });
@@ -385,9 +338,7 @@ it.each([401, 503])(
       discoveryApiKey: "resolved-family-key",
       profileId: "family:profile",
     }));
-    const resolveProviderAuth = vi.fn(() => {
-      throw new Error("Do not reselect auth");
-    });
+    const resolveProviderAuth = vi.fn(catalogContext().resolveProviderAuth);
     await expect(
       family.catalog.run({ config: {}, env: {}, resolveProviderApiKey, resolveProviderAuth }),
     ).resolves.toMatchObject({

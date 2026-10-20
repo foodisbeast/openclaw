@@ -17,19 +17,10 @@ const response = (data: unknown[], release = async () => undefined) =>
   catalogResponse({ data }, release, catalog.endpoint);
 const projectRows = (field: "slug" | "id") => (rows: readonly unknown[]) =>
   rows.flatMap((row) => {
-    if (!row || typeof row !== "object") {
-      return [];
-    }
-    const value =
-      field === "slug" ? ("slug" in row ? row.slug : undefined) : "id" in row ? row.id : undefined;
-    if (typeof value !== "string") {
-      return [];
-    }
-    return field === "slug"
-      ? value.trim()
-        ? [buildModel(value.trim())]
-        : []
-      : [buildModel(value)];
+    const value: unknown = row && typeof row === "object" ? Reflect.get(row, field) : undefined;
+    return typeof value !== "string" || (field === "slug" && !value.trim())
+      ? []
+      : [buildModel(field === "slug" ? value.trim() : value)];
   });
 
 beforeEach(() => clearLiveCatalogCacheForTests());

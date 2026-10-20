@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { expect, it, vi } from "vitest";
-import type { ChannelReplayGuard } from "./channel-replay-guard.js";
 import { createChannelReplayGuard } from "./persistent-dedupe.js";
 
 type ReplayEvent = {
@@ -17,13 +16,12 @@ function createGuard() {
   const claimKeys = (...keys: string[]) => guard.claim({ accountId: "work", keys });
   return Object.assign(guard, {
     claimKeys,
-    own: async (...keys: string[]) => expectClaimed(await claimKeys(...keys)),
+    own: async (...keys: string[]) => {
+      const claim = await claimKeys(...keys);
+      assert(claim.kind === "claimed", `expected claimed result, received ${claim.kind}`);
+      return claim.handle;
+    },
   });
-}
-
-async function expectClaimed(claim: Awaited<ReturnType<ChannelReplayGuard<ReplayEvent>["claim"]>>) {
-  assert(claim.kind === "claimed", `expected claimed result, received ${claim.kind}`);
-  return claim.handle;
 }
 
 it("fails open for invalid keys without recording them", async () => {
@@ -33,12 +31,9 @@ it("fails open for invalid keys without recording them", async () => {
 
   await expect(guard.claim(event)).resolves.toEqual({ kind: "invalid" });
   await expect(guard.shouldProcess(event)).resolves.toBe(true);
-  await expect(guard.processGuarded(event, process)).resolves.toEqual({
-    kind: "processed",
-    value: "handled",
-  });
-  expect("commit" in guard).toBe(false);
-  expect("release" in guard).toBe(false);
+  const result = await guard.processGuarded(event, process);
+  expect(result).toEqual({ kind: "processed", value: "handled" });
+  expect(["commit", "release"].filter((key) => key in guard)).toEqual([]);
   expect(process).toHaveBeenCalledOnce();
 });
 
@@ -57,27 +52,18 @@ it.each(["first", "second"] as const)("settles only owned keys when %s fails", a
     second.release({ error });
     await expect(first.commit()).resolves.toBe(true);
   }
-  for (const [waiter, rejected] of [
-    [sharedWaiter, failed === "first"],
-    [secondWaiter, failed === "second"],
-  ] as const) {
-    assert(waiter.kind === "inflight", "Expected in-flight claim");
-    if (rejected) {
-      await expect(waiter.pending).rejects.toBe(error);
-    } else {
-      await expect(waiter.pending).resolves.toBe(true);
-    }
-  }
-  const kinds = failed === "first" ? ["claimed", "duplicate"] : ["duplicate", "claimed"];
+  assert(sharedWaiter.kind === "inflight" && secondWaiter.kind === "inflight");
+  const rejected = { status: "rejected", reason: error };
+  const fulfilled = { status: "fulfilled", value: true };
+  expect(await Promise.allSettled([sharedWaiter.pending, secondWaiter.pending])).toEqual(
+    failed === "first" ? [rejected, fulfilled] : [fulfilled, rejected],
+  );
   const sharedKeys = failed === "first" ? ["shared"] : ["shared", "first-only"];
-  for (const [index, keys] of [sharedKeys, ["second-only"]].entries()) {
-    const result = await guard.claimKeys(...keys);
-    if (kinds[index] === "duplicate") {
-      expect(result).toEqual({ kind: "duplicate" });
-    } else {
-      expect(result).toMatchObject({ kind: "claimed" });
-    }
-  }
+  const claimed = expect.objectContaining({ kind: "claimed" });
+  const duplicate = { kind: "duplicate" };
+  expect([await guard.claimKeys(...sharedKeys), await guard.claimKeys("second-only")]).toEqual(
+    failed === "first" ? [claimed, duplicate] : [duplicate, claimed],
+  );
 });
 
 it.each([
@@ -87,15 +73,10 @@ it.each([
   const guard = createGuard();
   const event = { accountId: "work", keys: [`message-${errorMode}`] };
 
+  const error = new Error("handler failed");
   await expect(
-    guard.processGuarded(
-      event,
-      async () => {
-        throw new Error("handler failed");
-      },
-      { onError: errorMode },
-    ),
-  ).rejects.toThrow("handler failed");
+    guard.processGuarded(event, () => Promise.reject(error), { onError: errorMode }),
+  ).rejects.toBe(error);
   await expect(guard.claim(event)).resolves.toMatchObject({ kind: nextKind });
 });
 

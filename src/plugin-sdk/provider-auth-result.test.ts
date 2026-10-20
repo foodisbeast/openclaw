@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { MAX_DATE_TIMESTAMP_MS } from "../../packages/normalization-core/src/number-coercion.js";
 import { buildOauthProviderAuthResult } from "./provider-auth-result.js";
+import { buildCatalogModel } from "./provider-catalog.test-support.js";
 
 const auth = {
   providerId: "google",
@@ -32,15 +33,12 @@ it("normalizes retired Gemini refs inside explicit config patches", () => {
           baseUrl: "https://generativelanguage.googleapis.com/v1beta",
           headers: { Authorization: undefined, "X-Route": "keep" },
           models: [
-            {
-              id: ref,
+            buildCatalogModel(ref, {
               name: "Gemini 3 Pro",
               contextWindow: 1_048_576,
               maxTokens: 65_536,
-              input: ["text" as const],
               reasoning: true,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            },
+            }),
           ],
         },
       },
