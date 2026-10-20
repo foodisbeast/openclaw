@@ -63,10 +63,12 @@ const getMissingLocalMemoryEmbeddingProviderMessage = vi.hoisted(() =>
   ),
 );
 
+// mock-isolation: capture Doctor notes without terminal rendering or process state.
 vi.mock("../../packages/terminal-core/src/note.js", () => ({
   note,
 }));
 
+// mock-isolation: use a closed synthetic agent inventory for credential scenarios.
 vi.mock("../agents/agent-scope.js", () => ({
   listAgentIds,
   tryResolveDefaultAgentId: resolveDefaultAgentId,
@@ -74,41 +76,49 @@ vi.mock("../agents/agent-scope.js", () => ({
   resolveAgentWorkspaceDir,
 }));
 
+// mock-isolation: inject each scenario's complete memory-search configuration.
 vi.mock("../agents/memory-search.js", () => ({
   resolveMemorySearchConfig,
 }));
 
+// mock-isolation: prevent host credentials and environment keys from entering tests.
 vi.mock("../agents/model-auth.js", () => ({
   resolveApiKeyForProviderCore,
   resolveEnvApiKey: vi.fn(() => null),
   resolveUsableCustomProviderApiKey: vi.fn(() => null),
 }));
 
+// mock-isolation: model auth-profile availability without reading the host store.
 vi.mock("../agents/auth-profiles.js", () => ({
   hasAnyAuthProfileStoreSource,
   hasAuthProfileStoreSourceForProvider,
   isConfiguredAwsSdkAuthProfileForProvider,
 }));
 
+// mock-isolation: keep native memory runtime state outside Doctor unit scenarios.
 vi.mock("../plugins/memory-runtime.js", () => ({
   getActiveMemoryProviderCore,
   getActiveMemorySearchManagerCore,
   resolveActiveMemoryBackendConfig,
 }));
 
+// mock-isolation: provide a closed plugin registry without loading installed plugins.
 vi.mock("../plugins/plugin-registry.js", () => ({
   loadPluginManifestRegistryForPluginRegistry,
 }));
 
+// mock-isolation: inject the complete owner-policy verdict used by each scenario.
 vi.mock("../plugins/manifest-owner-policy.js", () => ({
   resolveManifestOwnerBasePolicyBlock,
 }));
 
+// mock-isolation: avoid filesystem-backed provider artifact discovery in unit tests.
 vi.mock("../plugins/provider-public-artifacts.js", () => ({
   listProviderPolicyOwners,
   loadProviderPolicyArtifacts,
 }));
 
+// mock-isolation: keep bundled runtime loading outside configuration diagnostics.
 vi.mock("../plugin-sdk/memory-core-bundled-runtime.js", () => ({
   getMissingLocalMemoryEmbeddingProviderMessage,
 }));

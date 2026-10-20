@@ -123,6 +123,7 @@ function isBtwTextBlock(block: unknown): block is TextContent {
   if (!block || typeof block !== "object") {
     return false;
   }
+  // SAFETY: the guard above establishes a non-null object; only optional fields are inspected.
   const record = block as { type?: unknown; text?: unknown };
   return normalizeLowercaseStringOrEmpty(record.type) === "text" && typeof record.text === "string";
 }
@@ -131,6 +132,7 @@ function isBtwImageBlock(block: unknown): block is ImageContent {
   if (!block || typeof block !== "object") {
     return false;
   }
+  // SAFETY: the guard above establishes a non-null object; only optional fields are inspected.
   const record = block as { type?: unknown; data?: unknown; mimeType?: unknown };
   return (
     normalizeLowercaseStringOrEmpty(record.type) === "image" &&
@@ -179,6 +181,7 @@ async function sanitizeBtwUserMessage(params: {
 function sanitizeBtwAssistantMessage(
   message: Extract<Message, { role: "assistant" }>,
 ): Extract<Message, { role: "assistant" }> | undefined {
+  // SAFETY: persisted transcripts can contain legacy string content outside the current message type.
   const rawContent = (message as { content?: unknown }).content;
   if (typeof rawContent === "string") {
     const trimmed = rawContent.trim();
@@ -214,19 +217,26 @@ export async function toSimpleContextMessages(params: {
     if (!message || typeof message !== "object") {
       continue;
     }
+    // SAFETY: the guard above establishes a non-null object; only the optional discriminator is read.
     const role = (message as { role?: unknown }).role;
     if (role !== "user" && role !== "assistant") {
       continue;
     }
     // BTW is a no-tools path, so keep only user-visible blocks from prior
     // messages and strip hidden reasoning/tool replay data.
-    const sanitizedMessage =
-      role === "user"
-        ? await sanitizeBtwUserMessage({
-            message: message as Extract<Message, { role: "user" }>,
-            imageLimits: params.imageLimits,
-          })
-        : sanitizeBtwAssistantMessage(message as Extract<Message, { role: "assistant" }>);
+    let sanitizedMessage: Message | undefined;
+    if (role === "user") {
+      // SAFETY: the runtime discriminator check above establishes the user-message variant.
+      const userMessage = message as Extract<Message, { role: "user" }>;
+      sanitizedMessage = await sanitizeBtwUserMessage({
+        message: userMessage,
+        imageLimits: params.imageLimits,
+      });
+    } else {
+      // SAFETY: the only remaining admitted discriminator is the assistant-message variant.
+      const assistantMessage = message as Extract<Message, { role: "assistant" }>;
+      sanitizedMessage = sanitizeBtwAssistantMessage(assistantMessage);
+    }
     if (sanitizedMessage) {
       contextMessages.push(sanitizedMessage);
     }
