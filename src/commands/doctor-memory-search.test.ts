@@ -1178,3 +1178,5 @@ describe("noteMemorySearchHealth", () => {
     expect(note).not.toHaveBeenCalled();
   });
 });
+
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

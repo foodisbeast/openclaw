@@ -342,7 +342,7 @@ describe("native assignment custody across ordinary parent rotation", () => {
       expect(stored.binding.threadId).toBe(next.threadId);
       expect(next.contextEngine?.projection?.epoch).toBe("after");
       expect(f.releasePredecessor).not.toHaveBeenCalled();
-      expect(await f.readAssignments(next.threadId)).toEqual(f.assignments);
+      expect(f.readAssignments(next.threadId)).toEqual(f.assignments);
     } finally {
       releaseProtection();
     }

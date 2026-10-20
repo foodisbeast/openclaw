@@ -33,7 +33,7 @@ export async function canRetainCodexProjectionBackgroundWork(
     binding.connectionScope === "supervision"
       ? undefined
       : (params.params.authProfileId ?? binding.authProfileId);
-  const resumeParams = await context.buildResumeParams(
+  const resumeParams = context.buildResumeParams(
     binding,
     authProfileId,
     buildCodexThreadRequestConfig(params, context, pluginConfig, finalConfig.configPatch),
