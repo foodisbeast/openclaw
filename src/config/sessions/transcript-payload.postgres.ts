@@ -15,9 +15,15 @@ export function projectPostgresTranscriptPayloadSql(
   eventJson: Expression<string | null>,
   reportJson: Expression<string | null>,
 ): RawBuilder<string | null> {
-  const event = sql.ref<string>("payload_source.event");
-  const report = sql.ref<string>("payload_source.report_json");
-  const message = sql<string>`(${event} -> 'message')`;
+  const event =
+    /* kysely-allow-raw: Fixed column from the guarded payload_source CTE below. */ sql.ref<string>(
+      "payload_source.event",
+    );
+  const report =
+    /* kysely-allow-raw: Fixed column from the bound payload_source CTE below. */ sql.ref<string>(
+      "payload_source.report_json",
+    );
+  const message = /* kysely-allow-raw: Fixed member of the validated JSONB payload. */ sql<string>`(${event} -> 'message')`;
   const internal = jsonPickObject(database, sql`(${message} -> '__openclaw')`, [
     "runId",
     "steerTargetRunId",

@@ -114,7 +114,7 @@ export function createTranscriptEventInserter(database: EngineConnection, sessio
     prepareSqliteQuerySync<readonly StoredRow[]>(database, (parameter) => {
       if (isPostgresSqlConnection(database)) {
         const inputColumns = [...columns, "report_json"] as const;
-        const input = sql<StoredRow>`(SELECT * FROM (VALUES ${sql.join(
+        const input = /* kysely-allow-raw: Bound VALUES use the closed INSERT column list and explicit PostgreSQL types. */ sql<StoredRow>`(SELECT * FROM (VALUES ${sql.join(
           Array.from(
             { length: count },
             (_, index) =>
@@ -137,7 +137,13 @@ export function createTranscriptEventInserter(database: EngineConnection, sessio
                 }),
               )})`,
           ),
-        )}) AS input (${sql.join(inputColumns.map((column) => sql.ref(column)))}))`;
+        )}) AS input (${sql.join(
+          inputColumns.map((column) =>
+            /* kysely-allow-raw: Closed INSERT column names label the bound VALUES relation. */ sql.ref(
+              column,
+            ),
+          ),
+        )}))`;
         return kysely
           .with("payload_rows", () => input)
           .insertInto("transcript_events")

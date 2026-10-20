@@ -95,6 +95,15 @@ function findSites(file: string, source: ts.SourceFile): DialectSite[] {
     if (postgres && /^(?:json_each|jsonb_set)\s*\(/iu.test(text.slice(match.index))) {
       return;
     }
+    // This PostgreSQL-only INSERT owner preserves native JSONB byte accounting.
+    // Keep SQLite JSON functions in this module, and shared operators elsewhere, counted.
+    if (
+      file === "src/config/sessions/transcript-payload.postgres.ts" &&
+      match.construct === "json-projection" &&
+      /^(?:jsonb_(?:typeof|exists)\s*\(|->>?)/iu.test(text.slice(match.index))
+    ) {
+      return;
+    }
     // These engine owners define/call PostgreSQL functions, not SQLite connection UDFs.
     if (
       match.construct === "custom-function" &&

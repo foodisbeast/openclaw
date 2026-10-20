@@ -65,7 +65,7 @@ export function projectModelContextBytesSql(
   event: Expression<string | Uint8Array>,
   omitCheckpoint: Expression<number>,
 ): RawBuilder<number> {
-  return sql<number>`octet_length(${projectModelContextEventSql(db, event, omitCheckpoint)})`;
+  return /* kysely-allow-raw: Byte accounting measures the existing native model projection. */ sql<number>`octet_length(${projectModelContextEventSql(db, event, omitCheckpoint)})`;
 }
 
 function contentPropertySql(
@@ -137,7 +137,9 @@ export function projectResetBoundaryNavigationSql(
   event: Expression<string>,
   valid: Expression<unknown> = jsonValid(db, event),
 ): RawBuilder<string> {
-  const identity = isPostgresSqlConnection(db) ? sql<string>`${event}::text` : event;
+  const identity = isPostgresSqlConnection(db)
+    ? /* kysely-allow-raw: PostgreSQL accepts the already parsed JSONB source but returns driver text. */ sql<string>`${event}::text`
+    : event;
   const entry = jsonPickObject(db, event, [
     ...TRANSCRIPT_NAVIGATION_KEYS,
     "timestamp",

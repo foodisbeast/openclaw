@@ -236,6 +236,28 @@ it("excludes overlapping JSON only in native PostgreSQL branches", () => {
   ]);
 });
 
+it("classifies native transcript JSONB without exempting SQLite projection debt", () => {
+  const { root, write } = fixture();
+  const postgres =
+    "SELECT jsonb_typeof(payload), jsonb_exists(payload, 'message'), payload -> 'message', payload ->> 'modelBytes'";
+  write(
+    "src/config/sessions/transcript-payload.postgres.ts",
+    `sql\`${postgres}\`; sql\`SELECT json_extract(payload, '$'), jsonb_extract(payload, '$')\`;`,
+  );
+  write("src/other.ts", `sql\`${postgres}\`;`);
+  expect(inventory(root)).toMatchObject([
+    {
+      file: "src/config/sessions/transcript-payload.postgres.ts",
+      matches: [{ construct: "json-projection" }, { construct: "json-projection" }],
+    },
+    {
+      file: "src/other.ts",
+      matches: Array.from({ length: 4 }, () => ({ construct: "json-projection" })),
+    },
+  ]);
+  expect(inventory(root).map((row) => row.matches.length)).toEqual([2, 4]);
+});
+
 it("distinguishes PostgreSQL staging from SQLite temporary schemas", () => {
   const { root, write } = fixture();
   write(

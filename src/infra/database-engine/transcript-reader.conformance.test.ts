@@ -135,10 +135,10 @@ it.skipIf(typeof connection !== "string")(
               "seq",
               "navigation_json",
               projectModelContextNavigationSql(postgres, event).as("legacy_navigation"),
-              sql<number>`octet_length(${projectModelContextEventSql(postgres, event, sql.lit(0))})`.as(
+              /* kysely-allow-raw: Independent legacy SQL byte count is the persisted-envelope oracle. */ sql<number>`octet_length(${projectModelContextEventSql(postgres, event, sql.lit(0))})`.as(
                 "legacy_bytes",
               ),
-              sql<number>`octet_length(${projectModelContextEventSql(postgres, event, sql.lit(1))})`.as(
+              /* kysely-allow-raw: Compare retained bytes with the legacy checkpoint-omitting projection. */ sql<number>`octet_length(${projectModelContextEventSql(postgres, event, sql.lit(1))})`.as(
                 "legacy_retained_bytes",
               ),
               transcriptEventModelNavigationSql(postgres).as("stored_navigation"),
