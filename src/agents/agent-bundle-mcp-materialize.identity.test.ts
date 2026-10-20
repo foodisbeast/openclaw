@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   form: vi.fn(),
   approve: vi.fn(),
 }));
+// mock-isolation: This fixture supplies its runtime directly; never consult the process MCP manager.
 vi.mock("./agent-bundle-mcp-manager-api.js", () => ({ peekSessionMcpRuntime: vi.fn() }));
 vi.mock("./agent-bundle-mcp-manager-cleanup.js", () => ({
   releaseSessionMcpRuntime: mocks.release,

@@ -9,6 +9,7 @@ import { capturePendingFinalRecoverySource } from "./pending-final-recovery-sour
 
 const state = vi.hoisted(() => ({ applySessionEntryReplacements: vi.fn() }));
 
+// mock-isolation: Apply the replacement callback to the fixture entry without opening a session store.
 vi.mock("../config/sessions/session-accessor.js", () => ({
   applySessionEntryReplacements: state.applySessionEntryReplacements,
 }));

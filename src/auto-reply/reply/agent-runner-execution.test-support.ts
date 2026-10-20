@@ -116,6 +116,7 @@ vi.mock("../../agents/cli-runner.js", () => ({
   runCliAgent: (params: unknown) => state.runCliAgentMock(params),
 }));
 
+// mock-isolation: Supply controlled fallback outcomes without invoking provider or auth runtimes.
 vi.mock("../../agents/model-fallback-runner.js", () => ({
   runWithModelFallback: async (params: unknown) => {
     const wrap = (candidate: unknown) =>

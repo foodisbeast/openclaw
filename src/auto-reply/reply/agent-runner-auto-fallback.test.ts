@@ -3,6 +3,7 @@ import type { SessionEntry } from "../../config/sessions.js";
 import type { FollowupRun } from "./queue.js";
 
 const updateSessionEntry = vi.hoisted(() => vi.fn());
+// mock-isolation: Exercise selection updates against the supplied session entry, not a live store.
 vi.mock("../../config/sessions/session-accessor.js", () => ({ updateSessionEntry }));
 import { clearRecoveredAutoFallbackPrimaryProbeSelection } from "./agent-runner-auto-fallback.js";
 

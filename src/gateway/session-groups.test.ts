@@ -77,6 +77,14 @@ describe("session groups catalog", () => {
     await state.cleanup();
   });
 
+  async function seedSessionStore(entries: Record<string, SessionEntry>, agentId = "main") {
+    const storePath = path.join(root, "agents", agentId, "sessions", "sessions.json");
+    for (const [sessionKey, entry] of Object.entries(entries)) {
+      await replaceSessionEntry({ agentId, env, storePath, sessionKey }, entry);
+    }
+    return storePath;
+  }
+
   async function seedMember(id: string, category = "Old", agentId = "main", sessionId = id) {
     const storePath = path.join(root, "agents", agentId, "sessions", "sessions.json");
     const target = { agentId, storePath, sessionKey: `agent:${agentId}:dashboard:${id}` };

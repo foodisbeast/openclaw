@@ -23,12 +23,16 @@ import { createTypingSignaler } from "./typing-mode.js";
 
 // mock-isolation: Isolate model execution, compaction, delivery, and plugins; retain queue/transcript admission.
 vi.mock("./agent-runner-execution.js", () => ({ executeAgentTurn: vi.fn() }));
+// mock-isolation: Compaction is outside this source-admission race.
 vi.mock("./agent-runner-memory.js", () => ({
   runSessionCompactionIfNeeded: async (params: { sessionEntry: InternalSessionEntry }) =>
     params.sessionEntry,
 }));
+// mock-isolation: No follow-up or outbound delivery is started by this admission fixture.
 vi.mock("./followup-runner.js", () => ({ createFollowupRunner: () => async () => {} }));
+// mock-isolation: The test ends after the runtime-owned transcript and reply boundary.
 vi.mock("./agent-runner-result.js", () => ({ finalizeReplyAgentRun: async () => undefined }));
+// mock-isolation: Verify admission even when no plugin hook is registered.
 vi.mock("../../plugins/hook-runner-global.js", () => ({ getGlobalHookRunner: () => undefined }));
 
 it("keeps a cron context prefix readable when an inbound turn persists before queuing", async () => {
@@ -141,6 +145,7 @@ it("keeps a cron context prefix readable when an inbound turn persists before qu
       replyOperation,
       typing,
       activeIsNewSession: false,
+      activeSessionStore: undefined,
       cfg: {},
       commandBody: "incoming DM",
       defaultModel: "test",
@@ -156,6 +161,7 @@ it("keeps a cron context prefix readable when an inbound turn persists before qu
       pendingToolTasks: new Set(),
       preflightCompactionApplied: false,
       replyMediaContext: { normalizePayload: async (payload) => payload },
+      replyRouteThreadId: undefined,
       replyToChannel: "telegram",
       replyToMode: "off",
       typingMode: "never",

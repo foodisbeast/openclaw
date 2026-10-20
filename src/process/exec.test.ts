@@ -65,7 +65,7 @@ describe("runCommandWithTimeout", () => {
     "reports invocation cleanup and honors the initial SIGINT signal: %s",
     async (mode) => {
       const controller = new AbortController();
-      const started = createDeferred<void>();
+      const started = createDeferred();
       const program = `const timer=setInterval(()=>{},1000); process.on('SIGINT',()=>{${mode === "cooperative" ? "clearInterval(timer);process.stdout.write('interrupted');process.exitCode=17;" : ""}}); process.stdout.write('ready');`;
       // Keep process I/O and polling real, but don't let host scheduling consume the grace period.
       const now = vi.spyOn(Date, "now").mockReturnValue(1_000);

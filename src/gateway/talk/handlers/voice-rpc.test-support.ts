@@ -33,7 +33,7 @@ export function voiceRuntimes() {
       };
       return { authority, runId, client, connId: client.connId };
     },
-    cleanup() {
+    cleanup: () => {
       for (const authority of authorities.splice(0)) {
         releaseAgentRunDelegatedAuthority(authority);
         clearAgentRunContext(authority.operationalRunInstance.runId);

@@ -90,13 +90,14 @@ function fixture(extraEnv: NodeJS.ProcessEnv = {}) {
     env,
     readRaw: () => fs.readFileSync(configPath, "utf8"),
     readConfig: (): unknown => JSON.parse(fs.readFileSync(configPath, "utf8")),
-    writeSource(source: unknown) {
+    writeSource: (source: unknown) => {
       const raw = JSON.stringify(source);
       fs.writeFileSync(configPath, raw);
       return raw;
     },
-    recordPending: (pending: readonly DeferredPluginMigration[]) =>
-      recordDeferredPluginMigrations({ env, pending }),
+    recordPending: async (pending: readonly DeferredPluginMigration[]) => {
+      await recordDeferredPluginMigrations({ env, pending });
+    },
     ioFor: (
       pending?: ConfigIoFactoryOptions["deferredPluginMigrations"],
       extra: ConfigIoFactoryOptions = {},

@@ -43,7 +43,7 @@ function createOperatorScope(profileName: string, scopes = ["operator.write"]) {
   return {
     client,
     context,
-    run<T>(callback: () => T, overrides: Partial<RequestScope> = {}) {
+    run: <T>(callback: () => T, overrides: Partial<RequestScope> = {}) => {
       return withPluginRuntimeGatewayRequestScope(
         { client, context, isWebchatConnect: () => false, ...overrides },
         callback,

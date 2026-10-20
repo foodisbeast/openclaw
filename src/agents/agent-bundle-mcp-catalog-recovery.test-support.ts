@@ -1,31 +1,6 @@
-import { once } from "node:events";
-import http, { type ServerResponse } from "node:http";
-import {
-  closeHttpServer,
-  readRequestText,
-  respondJson,
-} from "../../test/helpers/gateway-integration-fixtures.js";
+import http from "node:http";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { acquireTestPortBlock } from "../test-utils/port-claims.js";
-
-function reply(res: ServerResponse, id: string | number, session: string, result: unknown) {
-  res.setHeader("mcp-session-id", session);
-  respondJson(res, { jsonrpc: "2.0", id, result });
-}
-
-const tools = (sessionId: string) => ({
-  tools: [
-    {
-      name: "probe",
-      inputSchema: { type: "object" },
-      outputSchema: {
-        type: "object",
-        properties: { revision: { const: sessionId } },
-        required: ["revision"],
-      },
-    },
-  ],
-});
 
 export async function startCatalogRecoveryMcpServer(
   label: string,
@@ -41,10 +16,14 @@ export async function startCatalogRecoveryMcpServer(
   const recoveryListStarted = createDeferred();
   const pendingLists: Array<{
     id: string | number;
-    response: ServerResponse;
+    response: http.ServerResponse;
     sessionId: string;
   }> = [];
-  const server = http.createServer(async (request, response) => {
+  const server = http.createServer((request, response) => {
+    if (request.method === "GET") {
+      response.writeHead(405).end();
+      return;
+    }
     if (request.method === "DELETE") {
       terminationCount += 1;
       terminationStarted.resolve();
@@ -62,53 +41,102 @@ export async function startCatalogRecoveryMcpServer(
       response.writeHead(405).end();
       return;
     }
-    const message = JSON.parse(await readRequestText(request)) as {
-      id: string | number;
-      method: string;
-      params?: { protocolVersion?: string };
-    };
-    if (message.method === "initialize") {
-      sessionGeneration += 1;
-      const sessionId = `${label}-${sessionGeneration}`;
-      reply(response, message.id, sessionId, {
-        protocolVersion: message.params?.protocolVersion ?? "2025-03-26",
-        capabilities: { tools: {} },
-        serverInfo: { name: label, version: "1.0.0" },
-      });
-      return;
-    }
-    if (message.method === "notifications/initialized") {
-      response.writeHead(202).end();
-      return;
-    }
-    const rawSessionId = request.headers["mcp-session-id"];
-    const sessionId = typeof rawSessionId === "string" ? rawSessionId : "missing";
-    if (message.method === "tools/call") {
-      callReceived.resolve();
-      callReceived = createDeferred();
-      if (hangCalls) {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      const message = JSON.parse(body) as {
+        id: string | number;
+        method: string;
+        params?: { protocolVersion?: string };
+      };
+      if (message.method === "initialize") {
+        sessionGeneration += 1;
+        const sessionId = `${label}-${sessionGeneration}`;
+        response.setHeader("content-type", "application/json");
+        response.setHeader("mcp-session-id", sessionId);
+        response.writeHead(200).end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              protocolVersion: message.params?.protocolVersion ?? "2025-03-26",
+              capabilities: { tools: {} },
+              serverInfo: { name: label, version: "1.0.0" },
+            },
+          }),
+        );
         return;
       }
-      reply(response, message.id, sessionId, {
-        content: [],
-        structuredContent: { revision: sessionId },
-      });
-      return;
-    }
-    if (message.method === "tools/list") {
-      listCount += 1;
-      if (listCount === 1) {
-        reply(response, message.id, sessionId, tools(sessionId));
+      if (message.method === "notifications/initialized") {
+        response.writeHead(202).end();
         return;
       }
-      pendingLists.push({ id: message.id, response, sessionId });
-      maxActiveLists = Math.max(maxActiveLists, pendingLists.length);
-      recoveryListStarted.resolve();
-    }
+      const rawSessionId = request.headers["mcp-session-id"];
+      const sessionId = typeof rawSessionId === "string" ? rawSessionId : "missing";
+      if (message.method === "tools/call") {
+        callReceived.resolve();
+        callReceived = createDeferred();
+        if (hangCalls) {
+          return;
+        }
+        response.setHeader("content-type", "application/json");
+        response.setHeader("mcp-session-id", sessionId);
+        response.writeHead(200).end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              content: [],
+              structuredContent: { revision: sessionId },
+            },
+          }),
+        );
+        return;
+      }
+      if (message.method === "tools/list") {
+        listCount += 1;
+        if (listCount === 1) {
+          response.setHeader("content-type", "application/json");
+          response.setHeader("mcp-session-id", sessionId);
+          response.writeHead(200).end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: message.id,
+              result: {
+                tools: [
+                  {
+                    name: "probe",
+                    inputSchema: { type: "object" },
+                    outputSchema: {
+                      type: "object",
+                      properties: { revision: { const: sessionId } },
+                      required: ["revision"],
+                    },
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        pendingLists.push({ id: message.id, response, sessionId });
+        maxActiveLists = Math.max(maxActiveLists, pendingLists.length);
+        recoveryListStarted.resolve();
+      }
+    });
   });
   const portClaim = await acquireTestPortBlock({ offsets: [0] });
   try {
-    await once(server.listen(portClaim.port, "127.0.0.1"), "listening");
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(portClaim.port, "127.0.0.1", () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
   } catch (error) {
     await portClaim.release();
     throw error;
@@ -125,12 +153,35 @@ export async function startCatalogRecoveryMcpServer(
     },
     releaseLists: () => {
       for (const pending of pendingLists.splice(0)) {
-        reply(pending.response, pending.id, pending.sessionId, tools(pending.sessionId));
+        pending.response.setHeader("content-type", "application/json");
+        pending.response.setHeader("mcp-session-id", pending.sessionId);
+        pending.response.writeHead(200).end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: pending.id,
+            result: {
+              tools: [
+                {
+                  name: "probe",
+                  inputSchema: { type: "object" },
+                  outputSchema: {
+                    type: "object",
+                    properties: { revision: { const: pending.sessionId } },
+                    required: ["revision"],
+                  },
+                },
+              ],
+            },
+          }),
+        );
       }
     },
     close: async () => {
+      server.closeAllConnections();
       try {
-        await closeHttpServer(server);
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
       } finally {
         await portClaim.release();
       }
