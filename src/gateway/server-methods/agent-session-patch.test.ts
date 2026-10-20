@@ -6,7 +6,7 @@ import {
   type InternalSessionEntry as SessionEntry,
 } from "../../config/sessions.js";
 import * as transcriptReader from "../../config/sessions/session-transcript-anchor-read.js";
-import { buildAgentSessionPatch, type AgentSessionPatchBuild } from "./agent-session-patch.js";
+import { buildAgentSessionPatch } from "./agent-session-patch.js";
 
 beforeEach(() => {
   const read = transcriptReader.readSessionTranscriptAnchorsAsync;
@@ -21,70 +21,51 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-async function buildPatch(
-  touchInteraction: boolean,
-  opts?: { requestLabel?: string; label?: string },
-) {
-  const now = 1_000;
-  const entry: SessionEntry = {
-    sessionId: "session",
-    updatedAt: now,
-    lifecycleRunId: "completed-run",
-    lastRunId: "completed-run",
-    status: "failed",
-    agentStatus: { note: "Need a password", attention: "key", expiresAt: now + 60_000 },
-    ...(opts?.label ? { label: opts.label } : {}),
-  };
-  return (
-    await buildAgentSessionPatch({
-      freshEntry: entry,
-      initialEntry: entry,
-      ...(opts?.requestLabel ? { requestLabel: opts.requestLabel } : {}),
-      cfg: {},
-      sessionAgentId: "main",
-      canonicalSessionKey: "agent:main:main",
-      storePath: "/tmp/openclaw-agent-status-test.json",
-      normalizedSpawned: {},
-      requestDeliveryHint: undefined,
-      expectedExistingSessionId: entry.sessionId,
-      hasRestoredCronContinuation: false,
-      resetPolicy: resolveSessionResetPolicy({ resetType: "direct" }),
-      now,
-      isSystemGatewayRun: true,
-      visibleRequest: true,
-      fallbackSessionId: "fallback",
-      touchInteraction,
-    })
-  ).patch;
-}
-
-async function buildCreationPatch(opts: {
-  canonicalSessionKey?: string;
-  explicitSessionKey?: string;
-  freshEntry?: SessionEntry;
-  isSystemGatewayRun?: boolean;
-  visibleRequest?: boolean;
-}): Promise<AgentSessionPatchBuild> {
-  const now = 1_000;
+function buildCreationPatch(opts: Partial<Parameters<typeof buildAgentSessionPatch>[0]>) {
   return buildAgentSessionPatch({
     freshEntry: opts.freshEntry,
     initialEntry: opts.freshEntry,
     cfg: {},
     sessionAgentId: "main",
-    canonicalSessionKey: opts.canonicalSessionKey ?? "agent:main:incident-42",
+    canonicalSessionKey: "agent:main:incident-42",
     storePath: "/tmp/openclaw-explicit-session-name-test.json",
     normalizedSpawned: {},
     requestDeliveryHint: undefined,
-    ...(opts.explicitSessionKey ? { explicitSessionKey: opts.explicitSessionKey } : {}),
-    ...(opts.freshEntry?.sessionId ? { expectedExistingSessionId: opts.freshEntry.sessionId } : {}),
+    expectedExistingSessionId: opts.freshEntry?.sessionId,
     hasRestoredCronContinuation: false,
     resetPolicy: resolveSessionResetPolicy({ resetType: "direct" }),
-    now,
-    isSystemGatewayRun: opts.isSystemGatewayRun ?? false,
-    visibleRequest: opts.visibleRequest ?? true,
+    now: 1_000,
+    isSystemGatewayRun: false,
+    visibleRequest: true,
     fallbackSessionId: "fallback",
     touchInteraction: false,
+    ...opts,
   });
+}
+
+async function buildPatch(
+  touchInteraction: boolean,
+  opts?: { requestLabel?: string; label?: string },
+) {
+  const entry: SessionEntry = {
+    sessionId: "session",
+    updatedAt: 1_000,
+    lifecycleRunId: "completed-run",
+    lastRunId: "completed-run",
+    status: "failed",
+    agentStatus: { note: "Need a password", attention: "key", expiresAt: 61_000 },
+    ...(opts?.label ? { label: opts.label } : {}),
+  };
+  return (
+    await buildCreationPatch({
+      freshEntry: entry,
+      ...(opts?.requestLabel ? { requestLabel: opts.requestLabel } : {}),
+      canonicalSessionKey: "agent:main:main",
+      storePath: "/tmp/openclaw-agent-status-test.json",
+      isSystemGatewayRun: true,
+      touchInteraction,
+    })
+  ).patch;
 }
 
 describe("agent session patch", () => {
@@ -142,15 +123,6 @@ describe("agent session patch", () => {
     expect(Object.hasOwn(patch, "agentStatus")).toBe(false);
   });
 
-  it("names a new session from an explicit agent session key", async () => {
-    const result = await buildCreationPatch({
-      canonicalSessionKey: "agent:main:incident-42 ",
-      explicitSessionKey: "agent:main:incident-42",
-    });
-
-    expect(result.patch.displayName).toBe("incident-42");
-  });
-
   it("does not name an existing session", async () => {
     const entry: SessionEntry = {
       sessionId: "existing",
@@ -166,32 +138,22 @@ describe("agent session patch", () => {
     expect(mergeSessionEntry(entry, result.patch).displayName).toBe(entry.displayName);
   });
 
-  it("does not name a defaulted main session", async () => {
-    expect(
-      (await buildCreationPatch({ canonicalSessionKey: "agent:main:main" })).patch,
-    ).not.toHaveProperty("displayName");
-  });
-
-  it("does not name an invisible run", async () => {
-    const canonicalSessionKey = "agent:main:internal:probe";
-    const result = await buildCreationPatch({
-      canonicalSessionKey,
-      explicitSessionKey: canonicalSessionKey,
-      visibleRequest: false,
-    });
-
-    expect(result.patch).not.toHaveProperty("displayName");
-  });
-
   it.each([
-    ["subagent", "agent:main:subagent:worker-1"],
-    ["ACP", "agent:main:acp:thread-1"],
-  ] as const)("does not name a %s session", async (_kind, canonicalSessionKey) => {
-    const result = await buildCreationPatch({
-      canonicalSessionKey,
-      explicitSessionKey: canonicalSessionKey,
+    { name: "explicit key", key: "agent:main:incident-42", displayName: "incident-42" },
+    { name: "defaulted main", key: "agent:main:main", defaulted: true },
+    { name: "invisible run", key: "agent:main:internal:probe", invisible: true },
+    { name: "subagent", key: "agent:main:subagent:worker-1" },
+    { name: "ACP", key: "agent:main:acp:thread-1" },
+  ])("derives the display name for $name", async ({ key, displayName, defaulted, invisible }) => {
+    const { patch } = await buildCreationPatch({
+      canonicalSessionKey: displayName ? `${key} ` : key,
+      explicitSessionKey: defaulted ? undefined : key,
+      visibleRequest: !invisible,
     });
-
-    expect(result.patch).not.toHaveProperty("displayName");
+    if (displayName) {
+      expect(patch.displayName).toBe(displayName);
+    } else {
+      expect(patch).not.toHaveProperty("displayName");
+    }
   });
 });

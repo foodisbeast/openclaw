@@ -145,6 +145,16 @@ export function mockSpawnedChildSessionEntry(childSessionKey: string, root: stri
   });
 }
 
+async function preparePluginChild(root: string, childSessionKey: string) {
+  await writeSubagentSessionEntry({
+    stateDir: root,
+    agentId: "main",
+    sessionKey: childSessionKey,
+    defaultSessionId: "spawned-child-session",
+  });
+  mockSpawnedChildSessionEntry(childSessionKey, root);
+}
+
 /** Join native registry completions before retiring temporary state and database owners. */
 export async function withPluginSubagentTestState(
   prefix: string,
@@ -248,13 +258,7 @@ export function registerPluginSubagentToolForwardingTests() {
       "openclaw-plugin-tool-forwarding-",
       async ({ stateDir: root }) => {
         const childSessionKey = `agent:main:subagent:${scenario.runId}`;
-        await writeSubagentSessionEntry({
-          stateDir: root,
-          agentId: "main",
-          sessionKey: childSessionKey,
-          defaultSessionId: "spawned-child-session",
-        });
-        mockSpawnedChildSessionEntry(childSessionKey, root);
+        await preparePluginChild(root, childSessionKey);
         await using fixture = createPluginSubagentTestLifetime({
           root,
           runId: scenario.runId,
@@ -377,20 +381,22 @@ export function registerPluginSubagentAdmissionTests() {
           );
         }
 
-        const respond = await fixture.work.track(() =>
-          invokeAgent(
-            {
-              message: "background plugin subagent task",
-              sessionKey: childSessionKey,
-              idempotencyKey: runId,
-            },
-            {
-              context,
-              reqId: runId,
-              client: pluginClient,
-            },
-          ),
-        );
+        const invoke = (reqId: string) =>
+          fixture.work.track(() =>
+            invokeAgent(
+              {
+                message: "background plugin subagent task",
+                sessionKey: childSessionKey,
+                idempotencyKey: runId,
+              },
+              {
+                context,
+                reqId,
+                client: pluginClient,
+              },
+            ),
+          );
+        const respond = await invoke(runId);
         if (inputFailure) {
           expectRespondError(respond, {
             code: ErrorCodes.UNAVAILABLE,
@@ -422,14 +428,12 @@ export function registerPluginSubagentAdmissionTests() {
 
         await fixture.cleanupCompleted;
 
-        expectRecordFields(getSubagentRunByChildSessionKeyFromRuns(subagentRuns, childSessionKey), {
-          cleanupCompletedAt: expect.any(Number),
-        });
         const run = requireValue(
           getSubagentRunByChildSessionKeyFromRuns(subagentRuns, childSessionKey),
           "expected subagent registry run",
         );
         expectRecordFields(run, {
+          cleanupCompletedAt: expect.any(Number),
           runId,
           childSessionKey,
           controllerSessionKey: "agent:work:main",
@@ -444,20 +448,7 @@ export function registerPluginSubagentAdmissionTests() {
 
         const commandCallCount = mocks.agentCommand.mock.calls.length;
         const createdAt = run.createdAt;
-        await fixture.work.track(() =>
-          invokeAgent(
-            {
-              message: "background plugin subagent task",
-              sessionKey: childSessionKey,
-              idempotencyKey: runId,
-            },
-            {
-              context,
-              reqId: `${runId}-retry`,
-              client: pluginClient,
-            },
-          ),
-        );
+        await invoke(`${runId}-retry`);
 
         await fixture.work.runWhenIdle(() => {
           expect(mocks.agentCommand).toHaveBeenCalledTimes(commandCallCount);
@@ -535,13 +526,7 @@ export function registerPluginSubagentAdmissionTests() {
               },
             });
           }
-          await writeSubagentSessionEntry({
-            stateDir: root,
-            agentId: "main",
-            sessionKey: childSessionKey,
-            defaultSessionId: "spawned-child-session",
-          });
-          mockSpawnedChildSessionEntry(childSessionKey, root);
+          await preparePluginChild(root, childSessionKey);
           const context = makeContext();
           const baseClient = requireValue(backendGatewayClient(), "backend fixture client");
           const commandCallCount = mocks.agentCommand.mock.calls.length;

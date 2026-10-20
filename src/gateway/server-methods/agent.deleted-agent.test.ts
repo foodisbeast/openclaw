@@ -60,6 +60,18 @@ async function invoke(
   return { respond, dedupe };
 }
 
+function expectDeletedAgent(
+  { respond, dedupe }: Awaited<ReturnType<typeof invoke>>,
+  agent = "deleted-agent",
+) {
+  expect(respond).toHaveBeenCalledWith(false, undefined, {
+    code: ErrorCodes.INVALID_REQUEST,
+    message: `Agent "${agent}" no longer exists in configuration`,
+  });
+  expect(dedupe.size).toBe(0);
+  expect(agentCommandFromIngressMock).not.toHaveBeenCalled();
+}
+
 describe("agent RPC deleted-agent guard", () => {
   beforeEach(() => {
     resetDeletedAgentSessionMocks();
@@ -69,21 +81,15 @@ describe("agent RPC deleted-agent guard", () => {
   });
 
   it("rejects deleted-agent sessions before media offload or dedupe reservation", async () => {
-    const { respond, dedupe } = await invoke("req-attach", {
+    const result = await invoke("req-attach", {
       message: "see attachment",
       idempotencyKey: "run-attach",
       attachments: [
         { type: "file", mimeType: "application/pdf", fileName: "doc.pdf", content: "aGVsbG8=" },
       ],
     });
-
-    expect(respond).toHaveBeenCalledWith(false, undefined, {
-      code: ErrorCodes.INVALID_REQUEST,
-      message: 'Agent "deleted-agent" no longer exists in configuration',
-    });
+    expectDeletedAgent(result);
     expect(parseMessageWithAttachmentsMock).not.toHaveBeenCalled();
-    expect(dedupe.size).toBe(0);
-    expect(agentCommandFromIngressMock).not.toHaveBeenCalled();
   });
 
   it("reserves an ACP request while metadata is pending and clears a refused reservation", async () => {
@@ -110,13 +116,7 @@ describe("agent RPC deleted-agent guard", () => {
       expect(dedupe.size).toBeGreaterThan(0);
       expect(agentCommandFromIngressMock).not.toHaveBeenCalled();
       metadata.resolve("claude");
-      const { respond } = await pending;
-      expect(respond).toHaveBeenCalledWith(false, undefined, {
-        code: ErrorCodes.INVALID_REQUEST,
-        message: 'Agent "claude" no longer exists in configuration',
-      });
-      expect(dedupe.size).toBe(0);
-      expect(agentCommandFromIngressMock).not.toHaveBeenCalled();
+      expectDeletedAgent(await pending, "claude");
     } finally {
       metadata.resolve("claude");
       await pending;
@@ -126,37 +126,27 @@ describe("agent RPC deleted-agent guard", () => {
   it.each(["/reset", "/reset follow up"])(
     "rejects deleted-agent session keys before %s handling",
     async (message) => {
-      const { respond } = await invoke(
+      const result = await invoke(
         "req-reset",
         { message, idempotencyKey: `run-reset-${message}` },
         { connect: { scopes: ["operator.admin"] } } as never,
       );
-
-      expect(respond).toHaveBeenCalledWith(false, undefined, {
-        code: ErrorCodes.INVALID_REQUEST,
-        message: 'Agent "deleted-agent" no longer exists in configuration',
-      });
+      expectDeletedAgent(result);
       expect(performGatewaySessionResetMock).not.toHaveBeenCalled();
-      expect(agentCommandFromIngressMock).not.toHaveBeenCalled();
     },
   );
 
   it("rejects deleted-agent sessions before stale exec followup dedupe", async () => {
-    const { respond, dedupe } = await invoke(
-      "req-followup",
-      {
-        message: "approval followup",
-        idempotencyKey: "exec-approval-followup:req-followup",
-        execApprovalFollowupExpectedSessionId: "old-session",
-      },
-      { connect: { client: { mode: "backend" } } } as never,
+    expectDeletedAgent(
+      await invoke(
+        "req-followup",
+        {
+          message: "approval followup",
+          idempotencyKey: "exec-approval-followup:req-followup",
+          execApprovalFollowupExpectedSessionId: "old-session",
+        },
+        { connect: { client: { mode: "backend" } } } as never,
+      ),
     );
-
-    expect(respond).toHaveBeenCalledWith(false, undefined, {
-      code: ErrorCodes.INVALID_REQUEST,
-      message: 'Agent "deleted-agent" no longer exists in configuration',
-    });
-    expect(dedupe.size).toBe(0);
-    expect(agentCommandFromIngressMock).not.toHaveBeenCalled();
   });
 });

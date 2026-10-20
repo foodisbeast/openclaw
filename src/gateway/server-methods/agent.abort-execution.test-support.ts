@@ -21,6 +21,46 @@ import { handleDirectExternalChatSend } from "./chat-send-external-entry.js";
 
 const mocks = getAgentTestMocks();
 
+function blockRun(runId: string, lateFailure = false) {
+  prime();
+  const finishRun = createDeferred();
+  const context = makeContext();
+  let acceptedEntry: RpcSourceRef | undefined;
+  let capturedSignal: AbortSignal | undefined;
+  mocks.agentCommand.mockImplementationOnce(async (opts: { abortSignal?: AbortSignal }) => {
+    capturedSignal = opts.abortSignal;
+    const entry = getRpcSource(runId);
+    if (entry?.input.abortSignal === opts.abortSignal) {
+      acceptedEntry = entry;
+    }
+    await finishRun.promise;
+    if (lateFailure) {
+      throw new Error("late provider failure");
+    }
+    return {
+      payloads: [{ text: "late completion" }],
+      meta: { durationMs: 1, terminalReply: { disposition: "visible", text: "late completion" } },
+    };
+  });
+  return {
+    context,
+    active: () => requireValue(acceptedEntry, "active run missing"),
+    signal: () => capturedSignal,
+    async settle(abort: Promise<void> | undefined) {
+      finishRun.resolve();
+      await Promise.allSettled([abort]);
+      await acceptedEntry?.input.settlement.promise;
+    },
+  };
+}
+
+function expectAborted(runId: string, active: RpcSourceRef, respond: ReturnType<typeof vi.fn>) {
+  expect(getRpcSourceProjectSessionActive(active)).toBe(false);
+  expect(getRpcSource(runId)).toBe(active);
+  expect(mockCallArg(respond)).toBe(true);
+  expectRecordFields(mockCallArg(respond, 0, 1), { aborted: true, runIds: [runId] });
+}
+
 export function registerAgentAbortRunExecutionTest() {
   it.for([
     { action: "chat.abort", lateFailure: false },
@@ -28,27 +68,9 @@ export function registerAgentAbortRunExecutionTest() {
     { action: "/stop", lateFailure: true },
   ] as const)("settles $action (late failure: $lateFailure)", async (testCase, ctx) => {
     const { action, lateFailure } = testCase;
-    prime();
-    const finishRun = createDeferred();
-    const context = makeContext();
     const runId = "idem-abort-run";
-    let acceptedEntry: RpcSourceRef | undefined;
-    let capturedSignal: AbortSignal | undefined;
-    mocks.agentCommand.mockImplementationOnce(async (opts: { abortSignal?: AbortSignal }) => {
-      capturedSignal = opts.abortSignal;
-      const entry = getRpcSource(runId);
-      if (entry?.input.abortSignal === opts.abortSignal) {
-        acceptedEntry = entry;
-      }
-      await finishRun.promise;
-      if (lateFailure) {
-        throw new Error("late provider failure");
-      }
-      return {
-        payloads: [{ text: "late completion" }],
-        meta: { durationMs: 1, terminalReply: { disposition: "visible", text: "late completion" } },
-      };
-    });
+    const run = blockRun(runId, lateFailure);
+    const { context } = run;
 
     let abort: Promise<void> | undefined;
     try {
@@ -62,9 +84,9 @@ export function registerAgentAbortRunExecutionTest() {
         { context, reqId: runId },
       );
 
-      const active = requireValue(acceptedEntry, "active run missing");
+      const active = run.active();
       expect(getRpcSource(runId)).toBe(active);
-      expect(capturedSignal?.aborted).toBe(false);
+      expect(run.signal()?.aborted).toBe(false);
 
       const abortRespond = vi.fn();
       const stopOptions = {
@@ -92,20 +114,12 @@ export function registerAgentAbortRunExecutionTest() {
 
       // Acknowledge cancellation while the raw producer remains blocked.
       await withinTest(abort, ctx.signal);
-      expect(capturedSignal?.aborted).toBe(true);
-      expect(isAgentRunDirectAbortReason(capturedSignal?.reason)).toBe(true);
+      expect(run.signal()?.aborted).toBe(true);
+      expect(isAgentRunDirectAbortReason(run.signal()?.reason)).toBe(true);
       expect(active.adapter.abortStopReason).toBe(action === "chat.abort" ? "rpc" : "stop");
-      expect(getRpcSourceProjectSessionActive(active)).toBe(false);
-      expect(getRpcSource(runId)).toBe(active);
-      expect(mockCallArg(abortRespond)).toBe(true);
-      expectRecordFields(mockCallArg(abortRespond, 0, 1), {
-        aborted: true,
-        runIds: [runId],
-      });
+      expectAborted(runId, active, abortRespond);
     } finally {
-      finishRun.resolve();
-      await Promise.allSettled([abort]);
-      await acceptedEntry?.input.settlement.promise;
+      await run.settle(abort);
     }
     expect(getRpcSource(runId)).toBeUndefined();
     if (lateFailure) {
@@ -119,24 +133,9 @@ export function registerAgentAbortRunExecutionTest() {
 
 export function registerAgentAbortStaleKeyExecutionTest() {
   it("chat.abort by runId allows the owner connection to use a stale session key", async (ctx) => {
-    prime();
-    const finishRun = createDeferred();
-    const context = makeContext();
     const runId = "idem-abort-stale-session-key";
-    let acceptedEntry: RpcSourceRef | undefined;
-    let capturedSignal: AbortSignal | undefined;
-    mocks.agentCommand.mockImplementationOnce(async (opts: { abortSignal?: AbortSignal }) => {
-      capturedSignal = opts.abortSignal;
-      const entry = getRpcSource(runId);
-      if (entry?.input.abortSignal === opts.abortSignal) {
-        acceptedEntry = entry;
-      }
-      await finishRun.promise;
-      return {
-        payloads: [{ text: "late completion" }],
-        meta: { durationMs: 1, terminalReply: { disposition: "visible", text: "late completion" } },
-      };
-    });
+    const run = blockRun(runId);
+    const { context } = run;
 
     let abort: Promise<void> | undefined;
     try {
@@ -154,7 +153,7 @@ export function registerAgentAbortStaleKeyExecutionTest() {
         },
       );
 
-      const active = requireValue(acceptedEntry, "active run missing");
+      const active = run.active();
       expect(getRpcSource(runId)).toBe(active);
       expect(active.input.target?.sessionKey).toBe("agent:main:main");
       const abortRespond = vi.fn();
@@ -169,18 +168,10 @@ export function registerAgentAbortStaleKeyExecutionTest() {
 
       // Acknowledge cancellation while the raw producer remains blocked.
       await withinTest(abort, ctx.signal);
-      expect(capturedSignal?.aborted).toBe(true);
-      expect(getRpcSourceProjectSessionActive(active)).toBe(false);
-      expect(getRpcSource(runId)).toBe(active);
-      expect(mockCallArg(abortRespond)).toBe(true);
-      expectRecordFields(mockCallArg(abortRespond, 0, 1), {
-        aborted: true,
-        runIds: [runId],
-      });
+      expect(run.signal()?.aborted).toBe(true);
+      expectAborted(runId, active, abortRespond);
     } finally {
-      finishRun.resolve();
-      await Promise.allSettled([abort]);
-      await acceptedEntry?.input.settlement.promise;
+      await run.settle(abort);
     }
     expect(getRpcSource(runId)).toBeUndefined();
   });
