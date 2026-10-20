@@ -15,10 +15,7 @@ async function controls(overrides: Partial<Props>) {
   const selectedSession = {
     ...sessions.sessions[0]!,
     thinkingLevel: "high",
-    thinkingLevels: [
-      { id: "low", label: "Low" },
-      { id: "high", label: "High" },
-    ],
+    thinkingLevels: ["low", "high"].map((id) => ({ id, label: id })),
   };
   const onModelSelect = vi.fn(async () => true);
   const onThinkingSelect = vi.fn(async () => true);
@@ -77,58 +74,49 @@ async function controls(overrides: Partial<Props>) {
   };
 }
 
-it.each([
-  { name: "sending", sending: true },
-  { name: "preparing", activeRunId: "active-run" },
-  { name: "streaming", stream: "A reply in progress" },
-])("edits model, reasoning, and speed preferences while $name", async (busy) => {
-  const view = await controls(busy);
+it.each<[string, Partial<Props>, boolean]>([
+  ["sending", { sending: true }, true],
+  ["preparing", { activeRunId: "active-run" }, true],
+  ["streaming", { stream: "A reply in progress" }, true],
+  ["offline", { connected: false }, false],
+  ["missing backend", { gatewayAvailable: false }, false],
+  ["model switch", { modelSwitching: true }, false],
+  [
+    "write denied",
+    { modelMutationDisabledReason: "Read only", effortMutationDisabledReason: "Read only" },
+    false,
+  ],
+])("edits preferences only when permitted while %s", async (_, state, editable) => {
+  const view = await controls(
+    editable ? state : { ...state, activeRunId: "active-run", stream: "Working" },
+  );
   const { model, option, effort, slider, speed } = view;
-  expect(model.getAttribute("aria-disabled")).toBe("false");
-  expect(effort.getAttribute("aria-disabled")).toBe("false");
+  expect(model.getAttribute("aria-disabled")).toBe(String(!editable));
+  expect(slider.disabled).toBe(!editable);
   option.click();
-  expect(view.onModelSelect).toHaveBeenCalledWith("example/other", "main", undefined);
-  expect(slider.disabled).toBe(false);
+  expect(view.onModelSelect.mock.calls).toEqual(
+    editable ? [["example/other", "main", undefined]] : [],
+  );
   slider.value = "0";
   slider.dispatchEvent(new Event("change", { bubbles: true }));
-  expect(view.onThinkingSelect).toHaveBeenCalledWith("low", "main");
-  expect(speed.disabled).toBe(false);
-  speed.click();
-  expect(view.onFastModeSelect).toHaveBeenCalledWith("on", "main");
-});
-
-it.each([
-  { name: "offline", connected: false },
-  { name: "missing backend", gatewayAvailable: false },
-  { name: "model switch", modelSwitching: true },
-  {
-    name: "write denied",
-    modelMutationDisabledReason: "Read only",
-    effortMutationDisabledReason: "Read only",
-  },
-])("retains $name guards during an active response", async (guard) => {
-  const { model, option, slider, onModelSelect, onThinkingSelect } = await controls({
-    ...guard,
-    activeRunId: "active-run",
-    stream: "Working",
-  });
-  expect(model.getAttribute("aria-disabled")).toBe("true");
-  expect(slider.disabled).toBe(true);
-  option.click();
-  slider.value = "0";
-  slider.dispatchEvent(new Event("change", { bubbles: true }));
-  expect(onModelSelect).not.toHaveBeenCalled();
-  expect(onThinkingSelect).not.toHaveBeenCalled();
+  expect(view.onThinkingSelect.mock.calls).toEqual(editable ? [["low", "main"]] : []);
+  if (editable) {
+    expect(effort.getAttribute("aria-disabled")).toBe("false");
+    expect(speed.disabled).toBe(false);
+    speed.click();
+    expect(view.onFastModeSelect).toHaveBeenCalledWith("on", "main");
+  }
 });
 
 it("retires and restores an unavailable context-window control with its access guard", async () => {
   const contextWindowTarget = {
     contextWindow: "standard",
     contextWindowDefault: "standard",
-    contextWindows: [
-      { id: "standard", label: "Standard", contextWindow: 100_000 },
-      { id: "extended", label: "Extended", contextWindow: 200_000 },
-    ],
+    contextWindows: ["standard", "extended"].map((id, index) => ({
+      id,
+      label: id,
+      contextWindow: (index + 1) * 100_000,
+    })),
   };
   const view = await controls({
     contextWindowTarget,
