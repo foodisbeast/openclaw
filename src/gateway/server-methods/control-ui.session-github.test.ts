@@ -21,6 +21,8 @@ const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKe
 });
 const permissions = { contents: "write" as const, metadata: "read" as const };
 const time = "2026-10-10T10:00:00Z";
+const repo = { id: 404, fullName: "example/project" };
+const apiRepo = { id: repo.id, full_name: repo.fullName };
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -49,7 +51,7 @@ it.each([
         f.client.authenticatedFactoryGitHubAccountId = scenario === "actor-mismatch" ? 51 : 50;
         f.client.authenticatedUserId = `github:${host}:${f.client.authenticatedFactoryGitHubAccountId}`;
         f.client.internal = { ...f.client.internal, authenticatedOperator: true };
-        const config = {
+        setRuntimeConfigSnapshot({
           ...f.cfg,
           gateway: { ...f.cfg.gateway, github: { host, apiBaseUrl } },
           tools: {
@@ -61,7 +63,7 @@ it.each([
                 installationId: 202,
                 accountId: 303,
                 repositories: [
-                  { id: 404, fullName: "example/project" },
+                  repo,
                   ...(scenario === "multiple-repositories"
                     ? [{ id: 405, fullName: "example/other" }]
                     : []),
@@ -72,8 +74,7 @@ it.each([
               },
             },
           },
-        };
-        setRuntimeConfigSnapshot(config);
+        });
         const repository = await getSessionRepositoryWorkspaceStore().create({
           agentId: "main",
           sessionKey,
@@ -106,7 +107,7 @@ it.each([
               host,
               appId: 101,
               installationId: 202,
-              repository: { id: 404, fullName: "example/project" },
+              repository: repo,
               actor: { accountId: claim.actorId, profileId: claim.profileId },
               purpose: claim.purpose,
               binding: claim.binding,
@@ -121,7 +122,7 @@ it.each([
             return new Response(null, { status: scenario === "cleanup-failure" ? 500 : 204 });
           }
           const bodies: Record<string, unknown> = {
-            "/app": { id: 101, slug: "factory", permissions },
+            "/app": { id: 101, slug: "x", permissions },
             "/app/installations/202": {
               id: 202,
               app_id: 101,
@@ -129,19 +130,13 @@ it.each([
               suspended_at: null,
               permissions,
             },
-            "/users/factory%5Bbot%5D": {
-              id: 9001,
-              login: "factory[bot]",
-              type: "Bot",
-              avatar_url: null,
-            },
+            "/users/x%5Bbot%5D": { id: 9001, login: "x[bot]", type: "Bot", avatar_url: null },
             "/installation/repositories": {
               total_count: 1,
-              repositories: [{ id: 404, full_name: "example/project" }],
+              repositories: [apiRepo],
             },
             "/repos/example/project": {
-              id: 404,
-              full_name: "example/project",
+              ...apiRepo,
               private: true,
               visibility: "private",
             },
@@ -151,10 +146,7 @@ it.each([
             if (typeof init?.body !== "string") {
               throw new Error("App token request body must be JSON text");
             }
-            expect(JSON.parse(init.body)).toEqual({
-              repository_ids: [404],
-              permissions,
-            });
+            expect(JSON.parse(init.body)).toEqual({ repository_ids: [404], permissions });
             return Response.json({
               token: "synthetic-preview-app-token",
               expires_at: new Date(Date.now() + 3_600_000).toISOString(),
@@ -171,12 +163,8 @@ it.each([
             return Response.json({
               title: "Private session pull request",
               state: "open",
-              user: { login: "reader" },
               created_at: time,
               updated_at: time,
-              comments: 0,
-              review_comments: 0,
-              changed_files: 0,
               base: { repo: { url: `${apiBaseUrl}/repos/example/project` } },
             });
           }
@@ -231,8 +219,7 @@ it.each([
           });
           expect(requests.at(-1)).toBe(`${apiBaseUrl}/installation/token`);
         } else {
-          expect(respond.mock.calls[0]?.[0]).toBe(false);
-          expect(respond.mock.calls[0]?.[1]).toBeUndefined();
+          expect(respond.mock.calls[0]?.slice(0, 2)).toEqual([false, undefined]);
           if (["foreign-repository", "foreign-host", "actor-mismatch"].includes(scenario)) {
             expect(fetcher).not.toHaveBeenCalled();
           }

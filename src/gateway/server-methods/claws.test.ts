@@ -7,21 +7,16 @@ import { coreGatewayHandlers } from "./core-handlers.js";
 import type { RespondFn } from "./types.js";
 
 const listClawHubClaws = vi.hoisted(() => vi.fn());
-const searchClawHubClaws = vi.hoisted(() => vi.fn());
 const readClawHubClawDetail = vi.hoisted(() => vi.fn());
 const readClawHubClawPreview = vi.hoisted(() => vi.fn());
 vi.mock("../../claws/clawhub-source.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../claws/clawhub-source.js")>()),
   listClawHubClaws,
-  searchClawHubClaws,
   readClawHubClawDetail,
   readClawHubClawPreview,
 }));
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-  vi.clearAllMocks();
-});
+afterEach(() => vi.clearAllMocks());
 
 const enabled = { gateway: { controlUi: { experimental: { claws: true } } } };
 

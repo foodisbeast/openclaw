@@ -1,4 +1,5 @@
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterAll, it, expect } from "vitest";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
@@ -31,17 +32,9 @@ it.each(["", "Partial reply"])(
         message: { ...message, idempotencyKey },
         now: 1,
       });
-      expect(result.ok).toBe(true);
-      if (!result.ok || !result.value?.anchor) {
-        throw new Error("Expected committed transcript anchor");
-      }
-      return result.value.anchor;
+      return expectDefined(result.ok ? result.value?.anchor : undefined, "committed anchor");
     };
-    const originalInput = append("original-request", {
-      role: "user",
-      content: "run the command",
-      timestamp: 0,
-    });
+    const originalInput = append("input", { role: "user", content: "run", timestamp: 0 });
     append(
       "tool-request",
       makeAgentAssistantMessage({
@@ -97,7 +90,6 @@ it.each(["", "Partial reply"])(
       { toolCallId: "lost-a", isError: true, content: [{ text: missingToolResultText }] },
       { toolCallId: "lost-b", isError: true, content: [{ text: missingToolResultText }] },
     ]);
-    expect(results).toHaveLength(3);
     expect(
       messages.filter(
         (message) => message.role === "assistant" && JSON.stringify(message).includes('"text":'),
