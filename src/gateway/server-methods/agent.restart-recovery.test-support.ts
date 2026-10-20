@@ -101,21 +101,21 @@ export function registerAgentQueuedRestartRecoveryTests() {
         expect(mocks.agentCommand).not.toHaveBeenCalled();
         expect(rpcSourceTesting.has(runId)).toBe(false);
         const retryable = cause === "restart" || cause === "timeout";
-        expect(store[sessionKey]).toMatchObject({
+        const entry = store[sessionKey];
+        expectRecordFields(entry, {
           sessionId,
           status: retryable ? "interrupted" : "killed",
           abortedLastRun: retryable,
+          restartRecoveryDeliveryRunId: undefined,
+          mainRestartRecovery: retryable
+            ? expect.objectContaining({ chargedAttempts: 1 })
+            : undefined,
+          ...(retryable
+            ? { restartRecoveryDeliverySourceRunId: "interrupted-source-run" }
+            : { restartRecoveryRuns: undefined }),
         });
-        expect(store[sessionKey]?.restartRecoveryDeliveryRunId).toBeUndefined();
         if (retryable) {
-          expect(store[sessionKey]?.mainRestartRecovery).toMatchObject({ chargedAttempts: 1 });
-          expect(store[sessionKey]?.mainRestartRecovery?.reservation).toBeUndefined();
-          expect(store[sessionKey]?.restartRecoveryDeliverySourceRunId).toBe(
-            "interrupted-source-run",
-          );
-        } else {
-          expect(store[sessionKey]?.mainRestartRecovery).toBeUndefined();
-          expect(store[sessionKey]?.restartRecoveryRuns).toBeUndefined();
+          expect(entry?.mainRestartRecovery?.reservation).toBeUndefined();
         }
       } finally {
         dispatchGate.resolve();

@@ -30,29 +30,24 @@ vi.mock("../chat-attachments.js", async (importOriginal) => ({
 
 // Load the handler after the shared helper has registered its storage mocks.
 const { agentHandlers } = await import("./agent.js");
+const handleAgent = expectDefined(agentHandlers.agent, "agent RPC handler");
 
 async function invoke(
   id: string,
   params: Record<string, unknown>,
-  client: Parameters<NonNullable<typeof agentHandlers.agent>>[0]["client"] = null,
+  client: Parameters<typeof handleAgent>[0]["client"] = null,
   pending?: { dedupe: Map<string, unknown>; sessionKey: string; agent: string },
 ) {
   const respond = vi.fn<RespondFn>();
   const dedupe = pending?.dedupe ?? new Map();
-  await expectDefined(agentHandlers.agent, "agentHandlers.agent test invariant").call(
-    agentHandlers,
-    {
-      req: { id } as never,
-      params: { sessionKey: pending?.sessionKey ?? mockDeletedAgentSession(), ...params },
-      respond,
-      context: {
-        dedupe,
-        getRuntimeConfig: () => ({}),
-      } as never,
-      client,
-      isWebchatConnect: () => false,
-    },
-  );
+  await handleAgent({
+    req: { type: "req", method: "agent", id },
+    params: { sessionKey: pending?.sessionKey ?? mockDeletedAgentSession(), ...params },
+    respond,
+    context: { dedupe, getRuntimeConfig: () => ({}) } as never,
+    client,
+    isWebchatConnect: () => false,
+  });
   expect(respond).toHaveBeenCalledWith(false, undefined, {
     code: ErrorCodes.INVALID_REQUEST,
     message: `Agent "${pending?.agent ?? "deleted-agent"}" no longer exists in configuration`,

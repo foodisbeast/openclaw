@@ -296,11 +296,8 @@ it.for(["observer error", "observer error before dispatch", "cancel before dispa
         entered.resolve();
       }
       return {
-        payloads: [{ text: "owner proof settled" }],
-        meta: {
-          durationMs: 1,
-          terminalReply: { disposition: "visible", text: "owner proof settled" },
-        },
+        payloads: [{ text: "settled" }],
+        meta: { terminalReply: { disposition: "visible", text: "settled" } },
       };
     });
     const delayedDispatch =

@@ -328,14 +328,13 @@ export function registerPluginSubagentAdmissionTests() {
         await resetSubagentRegistryForTests({ persist: false });
         const childSessionKey = "agent:work:subagent:plugin-helper";
         await using fixture = createPluginSubagentTestLifetime({ root, runId, childSessionKey });
+        const model = "anthropic/claude-sonnet-4-6";
         const cfg = {
           session: { mainKey: "main", scope: "per-sender" },
           agents: {
             defaults: {
-              model: { primary: "anthropic/claude-sonnet-4-6" },
-              models: {
-                "anthropic/claude-sonnet-4-6": { agentRuntime: { id: "claude-cli" } },
-              },
+              model: { primary: model },
+              models: { [model]: { agentRuntime: { id: "claude-cli" } } },
             },
             entries: { main: {}, work: {} },
           },
@@ -397,15 +396,9 @@ export function registerPluginSubagentAdmissionTests() {
         }
         await waitForAgentCommandCallAfter(initialCommandCallCount);
 
-        const acceptedPayload = respond.mock.calls.find(
-          ([ok, payload]) =>
-            ok === true &&
-            typeof payload === "object" &&
-            payload !== null &&
-            "status" in payload &&
-            payload.status === "accepted",
-        )?.[1];
-        expect(acceptedPayload).toMatchObject({
+        expect(respond.mock.calls[0]?.[0]).toBe(true);
+        expect(respond.mock.calls[0]?.[1]).toMatchObject({
+          status: "accepted",
           runtime: {
             harness: "claude-cli",
             provider: "anthropic",
