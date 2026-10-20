@@ -7,7 +7,9 @@ import type { UpdateDoctorConfigChange } from "../../infra/update-doctor-config.
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import { canResolveRegistryVersionForPackageTarget } from "../../infra/update-global.js";
 import { isUpdatePostInstallVerificationDeferred } from "../../infra/update-run-step.js";
+import { reportUpdateStepCompletion } from "../../infra/update-runner-command.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
+import type { UpdateStepResult } from "../../infra/update-step-result.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import {
   parsePackageOpenClawSchemaVersions,
