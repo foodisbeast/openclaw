@@ -18,27 +18,36 @@ function buildModel(id: string): ModelDefinitionConfig {
   };
 }
 
+const endpoint = "https://provider.example.test/v1/models";
+const catalog = {
+  providerId: "provider",
+  endpoint,
+  providerConfig: {
+    api: "openai-completions" as const,
+    baseUrl: "https://provider.example.test/v1",
+  },
+  models: [buildModel("fallback-model")],
+};
+const response = (data: unknown[], release = async () => undefined) => ({
+  response: Response.json({ data }),
+  finalUrl: endpoint,
+  release,
+});
+
 describe("live provider catalog projection", () => {
   beforeEach(() => clearLiveCatalogCacheForTests());
 
   it("preserves identity-specific size facts through live catalog projection", async () => {
-    const fetchGuard: LiveModelCatalogFetchGuard = async () => ({
-      response: Response.json({
-        data: [
-          { id: "known-chat", parameterCount: 4_000_000_000 },
-          { id: "enriched-chat", parameterCount: 4_000_000_000 },
-          { id: "novel-chat", parameterCount: 4_000_000_000 },
-          { id: "template-next" },
-          { id: "invalid-chat", parameterCount: 0 },
-        ],
-      }),
-      finalUrl: "https://provider.example.test/v1/models",
-      release: async () => undefined,
-    });
+    const fetchGuard: LiveModelCatalogFetchGuard = async () =>
+      response([
+        { id: "known-chat", parameterCount: 4_000_000_000 },
+        { id: "enriched-chat", parameterCount: 4_000_000_000 },
+        { id: "novel-chat", parameterCount: 4_000_000_000 },
+        { id: "template-next" },
+        { id: "invalid-chat", parameterCount: 0 },
+      ]);
     const provider = await buildLiveModelProviderConfig({
-      providerId: "provider",
-      endpoint: "https://provider.example.test/v1/models",
-      providerConfig: { api: "openai-completions", baseUrl: "https://provider.example.test/v1" },
+      ...catalog,
       models: [
         { ...buildModel("known-chat"), parameterCount: 70_000_000_000 },
         buildModel("enriched-chat"),
@@ -61,25 +70,11 @@ describe("live provider catalog projection", () => {
     const release = vi.fn(async () => undefined);
     const fetchGuard: MockedFunction<LiveModelCatalogFetchGuard> = vi
       .fn()
-      .mockResolvedValueOnce({
-        response: Response.json({ data: [{ slug: "" }] }),
-        finalUrl: "https://provider.example.test/v1/models",
-        release,
-      })
-      .mockResolvedValueOnce({
-        response: Response.json({ data: [{ slug: "projected-model" }] }),
-        finalUrl: "https://provider.example.test/v1/models",
-        release,
-      });
+      .mockResolvedValueOnce(response([{ slug: "" }], release))
+      .mockResolvedValueOnce(response([{ slug: "projected-model" }], release));
     const buildProvider = async () =>
       await buildLiveModelProviderConfig({
-        providerId: "provider",
-        endpoint: "https://provider.example.test/v1/models",
-        providerConfig: {
-          api: "openai-completions",
-          baseUrl: "https://provider.example.test/v1",
-        },
-        models: [buildModel("fallback-model")],
+        ...catalog,
         fetchGuard,
         ttlMs: 60_000,
         projectRows: (rows) =>
@@ -104,18 +99,12 @@ describe("live provider catalog projection", () => {
       response: new Headers(init?.headers).has("authorization")
         ? new Response("", { status: 401 })
         : Response.json({ data: [{ id: "public-model", object: "model" }] }),
-      finalUrl: "https://provider.example.test/v1/models",
+      finalUrl: endpoint,
       release,
     }));
     const buildProvider = async () =>
       await buildLiveModelProviderConfig({
-        providerId: "provider",
-        endpoint: "https://provider.example.test/v1/models",
-        providerConfig: {
-          api: "openai-completions",
-          baseUrl: "https://provider.example.test/v1",
-        },
-        models: [buildModel("fallback-model")],
+        ...catalog,
         apiKey: "runtime-key",
         discoveryApiKey: "rejected-key",
         fetchGuard,

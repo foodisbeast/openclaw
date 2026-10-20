@@ -47,6 +47,30 @@ const catalogParams = {
 };
 const projectRows = (rows: readonly unknown[], fallback: ModelProviderConfig) =>
   rows.length ? fallback.models : [];
+const catalogResponse = (
+  data: unknown,
+  release: () => Promise<void>,
+  finalUrl = catalogParams.endpoint,
+) => ({
+  response: Response.json(data),
+  release,
+  finalUrl,
+});
+const catalogContext = (signal?: AbortSignal) => ({
+  config: {},
+  env: {},
+  signal,
+  resolveProviderApiKey: () => ({ apiKey: "fixture-key" }),
+  resolveProviderAuth: () => {
+    throw new Error("Do not reselect auth");
+  },
+});
+const familyOptions = {
+  discoveryMode: "strict" as const,
+  credentialProviderId: "family",
+  staticCatalog: async () => ({ providers: {} }),
+  augmentModelCatalog: () => [],
+};
 
 afterEach(() => {
   vi.useRealTimers();
@@ -62,14 +86,14 @@ describe("strict catalog acquisition", () => {
     fetchGuard.mockImplementation(async ({ url }) => {
       started.resolve();
       await responseReady.promise;
-      return {
-        response: Response.json({
+      return catalogResponse(
+        {
           alpha: { id: "alpha", models: {} },
           beta: { id: "beta", models: {} },
-        }),
-        finalUrl: url,
+        },
         release,
-      };
+        url,
+      );
     });
     const acquire = (signal: AbortSignal, providerId = "alpha") =>
       getCachedUpstreamProviderCatalog({
@@ -178,15 +202,7 @@ describe("strict catalog acquisition", () => {
               providerId: "demo",
               buildProvider: () => ({ ...seed, baseUrl }),
               discoveryMode: "strict",
-              ctx: {
-                config: {},
-                env: {},
-                signal,
-                resolveProviderApiKey: () => ({ apiKey: "fixture-key" }),
-                resolveProviderAuth: () => {
-                  throw new Error("Do not reselect auth");
-                },
-              },
+              ctx: catalogContext(signal),
             })
           : getCachedLiveProviderModelRows({
               providerId: "demo",
@@ -263,24 +279,10 @@ describe("strict catalog acquisition", () => {
     fetchGuard.mockImplementation(async ({ url }) => {
       started.resolve();
       await responseReady.promise;
-      return {
-        response: Response.json({ data: [{ id: "known" }] }),
-        finalUrl: url,
-        release: async () => released.resolve(),
-      };
+      return catalogResponse({ data: [{ id: "known" }] }, async () => released.resolve(), url);
     });
-    const ctx = {
-      config: {},
-      env: {},
-      signal: controller.signal,
-      resolveProviderApiKey: () => ({ apiKey: "fixture-key" }),
-      resolveProviderAuth: () => {
-        throw new Error("Do not reselect auth");
-      },
-    };
     const pending = buildOpenAICompatibleProviderFamilyCatalog({
-      discoveryMode: "strict",
-      credentialProviderId: "family",
+      ...familyOptions,
       entries: [
         {
           id: "demo",
@@ -290,9 +292,7 @@ describe("strict catalog acquisition", () => {
           buildProvider: () => seed,
         },
       ],
-      staticCatalog: async () => ({ providers: {} }),
-      augmentModelCatalog: () => [],
-    }).catalog.run(ctx);
+    }).catalog.run(catalogContext(controller.signal));
     try {
       await started.promise;
       controller.abort(new Error("Catalog owner closed"));
@@ -314,29 +314,13 @@ describe("strict catalog acquisition", () => {
     const failure = new Error("catalog transport unavailable");
     fetchGuard
       .mockRejectedValueOnce(failure)
-      .mockResolvedValueOnce({
-        response: Response.json({ data: [] }),
-        finalUrl: `${seed.baseUrl}/models`,
-        release,
-      })
-      .mockImplementation(async () => ({
-        response: Response.json({ data: [{ id: "known" }] }),
-        finalUrl: `${seed.baseUrl}/models`,
-        release,
-      }));
-    const params = {
-      discoveryMode: "strict" as const,
-      providerId: "demo",
-      providerConfig: seed,
-      apiKey: "synthetic-key",
-      fetchGuard,
-    };
+      .mockResolvedValueOnce(catalogResponse({ data: [] }, release))
+      .mockImplementation(async () => catalogResponse({ data: [{ id: "known" }] }, release));
     const acquire = (ttlMs = 1_000) =>
       buildLiveModelProviderConfig({
-        ...params,
+        ...catalogParams,
+        discoveryMode: "strict",
         ttlMs,
-        endpoint: `${seed.baseUrl}/models`,
-        models: seed.models,
       });
     await expect(acquire()).rejects.toBe(failure);
     expect(fetchGuard).toHaveBeenCalledTimes(1);
@@ -362,7 +346,7 @@ describe("strict catalog acquisition", () => {
       const release = vi.fn(async () => {});
       fetchGuard.mockImplementation(async ({ url }) => {
         await held.promise;
-        return { response: Response.json({ data: [] }), finalUrl: url, release };
+        return catalogResponse({ data: [] }, release, url);
       });
       const acquire = (mode: "strict" | "advisory") =>
         buildLiveModelProviderConfig({
@@ -392,16 +376,10 @@ describe("strict catalog acquisition", () => {
     it("preserves auth isolation with custom key parts", async () => {
       const release = vi.fn(async () => {});
       fetchGuard
-        .mockResolvedValueOnce({
-          response: Response.json({ data: [] }),
-          finalUrl: catalogParams.endpoint,
-          release,
-        })
-        .mockImplementation(async ({ url }) => ({
-          response: Response.json({ data: [{ id: "known" }] }),
-          finalUrl: url,
-          release,
-        }));
+        .mockResolvedValueOnce(catalogResponse({ data: [] }, release))
+        .mockImplementation(async ({ url }) =>
+          catalogResponse({ data: [{ id: "known" }] }, release, url),
+        );
       const params = {
         ...catalogParams,
         discoveryMode: "strict" as const,
@@ -438,8 +416,7 @@ describe("strict catalog acquisition", () => {
         };
       });
       const family = buildOpenAICompatibleProviderFamilyCatalog({
-        discoveryMode: "strict",
-        credentialProviderId: "family",
+        ...familyOptions,
         entries: ["unavailable", "healthy"].map((id) => ({
           id,
           label: id,
@@ -447,8 +424,6 @@ describe("strict catalog acquisition", () => {
           models: seed.models,
           buildProvider: () => ({ ...seed, baseUrl: `https://${id}.example/v1` }),
         })),
-        staticCatalog: async () => ({ providers: {} }),
-        augmentModelCatalog: () => [],
       });
       const resolveProviderApiKey = vi.fn(() => ({
         apiKey: "family:profile",

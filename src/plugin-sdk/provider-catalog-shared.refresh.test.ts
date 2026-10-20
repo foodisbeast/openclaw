@@ -10,25 +10,26 @@ import {
   getCachedLiveCatalogValue,
 } from "./provider-catalog-shared.js";
 
+const withFixtureExpiry = <T>(read: () => Promise<T>) =>
+  withProviderCatalogExpiry(read, () => ["fixture"]);
+const refreshTwice = (read: () => Promise<string>) =>
+  captureProviderCatalogExpiries(async () => [await read(), await read()], { refresh: true });
+
 describe("explicit provider catalog acquisition", () => {
-  beforeEach(() => {
-    clearLiveCatalogCacheForTests();
-  });
+  beforeEach(() => clearLiveCatalogCacheForTests());
 
   it("refreshes only requested keys once per acquisition and retains the refreshed TTL", async () => {
     let now = 1_000;
     let advertised = "original";
     const load = vi.fn(async () => advertised);
     const read = (credential = "synthetic-account-a", endpoint = "https://catalog.example/a") =>
-      withProviderCatalogExpiry(
-        () =>
-          getCachedLiveCatalogValue({
-            keyParts: ["fixture", endpoint, credential],
-            ttlMs: 3_600_000,
-            now: () => now,
-            load,
-          }),
-        () => ["fixture"],
+      withFixtureExpiry(() =>
+        getCachedLiveCatalogValue({
+          keyParts: ["fixture", endpoint, credential],
+          ttlMs: 3_600_000,
+          now: () => now,
+          load,
+        }),
       );
 
     const initial = await captureProviderCatalogExpiries(() => read());
@@ -40,10 +41,7 @@ describe("explicit provider catalog acquisition", () => {
     advertised = "newly-granted";
     now = 2_000;
     expect((await captureProviderCatalogExpiries(() => read())).value).toBe("original");
-    const refreshed = await captureProviderCatalogExpiries(
-      async () => [await read(), await read()],
-      { refresh: true },
-    );
+    const refreshed = await refreshTwice(read);
     expect(refreshed.value).toEqual(["newly-granted", "newly-granted"]);
     expect(refreshed.providerExpiries.get("fixture")).toBe(3_602_000);
     expect(load).toHaveBeenCalledTimes(4);
@@ -69,19 +67,12 @@ describe("explicit provider catalog acquisition", () => {
     const completion = createDeferred<string>();
     const load = vi.fn<() => Promise<string>>().mockResolvedValueOnce("original");
     const read = () =>
-      withProviderCatalogExpiry(
-        () => getCachedLiveCatalogValue({ keyParts: ["shared-refresh"], load }),
-        () => ["fixture"],
-      );
+      withFixtureExpiry(() => getCachedLiveCatalogValue({ keyParts: ["shared-refresh"], load }));
     await captureProviderCatalogExpiries(read);
     load.mockImplementation(() => completion.promise);
 
-    const first = captureProviderCatalogExpiries(async () => [await read(), await read()], {
-      refresh: true,
-    });
-    const second = captureProviderCatalogExpiries(async () => [await read(), await read()], {
-      refresh: true,
-    });
+    const first = refreshTwice(read);
+    const second = refreshTwice(read);
     const ordinary = captureProviderCatalogExpiries(read);
     try {
       expect(load).toHaveBeenCalledTimes(2);
@@ -104,10 +95,7 @@ describe("explicit provider catalog acquisition", () => {
       .mockRejectedValueOnce(failure)
       .mockResolvedValueOnce("recovered");
     const read = () =>
-      withProviderCatalogExpiry(
-        () => getCachedLiveCatalogValue({ keyParts: ["failed-refresh"], load }),
-        () => ["fixture"],
-      );
+      withFixtureExpiry(() => getCachedLiveCatalogValue({ keyParts: ["failed-refresh"], load }));
     expect((await captureProviderCatalogExpiries(read)).value).toBe("original");
     await expect(captureProviderCatalogExpiries(read, { refresh: true })).rejects.toBe(failure);
     expect((await captureProviderCatalogExpiries(read)).value).toBe("recovered");
@@ -135,9 +123,8 @@ describe("catalog acquisition budget sharing", () => {
         withProviderCatalogDiscoveryBudget(budget, () =>
           captureProviderCatalogExpiries(
             () =>
-              withProviderCatalogExpiry(
-                () => getCachedLiveCatalogValue({ keyParts: ["budget-order"], load }),
-                () => ["fixture"],
+              withFixtureExpiry(() =>
+                getCachedLiveCatalogValue({ keyParts: ["budget-order"], load }),
               ),
             { refresh },
           ),
@@ -190,17 +177,15 @@ describe("catalog acquisition budget sharing", () => {
 it("publishes cached-result freshness through the nested acquisition budget", async () => {
   clearLiveCatalogCacheForTests();
   const result = await captureProviderCatalogExpiries(() =>
-    withProviderCatalogExpiry(
-      () =>
-        withProviderCatalogDiscoveryBudget(180_000, () =>
-          getCachedLiveCatalogValue({
-            keyParts: ["budget-expiry"],
-            load: async () => "healthy",
-            ttlMs: 1_000,
-            now: () => 100,
-          }),
-        ),
-      () => ["fixture"],
+    withFixtureExpiry(() =>
+      withProviderCatalogDiscoveryBudget(180_000, () =>
+        getCachedLiveCatalogValue({
+          keyParts: ["budget-expiry"],
+          load: async () => "healthy",
+          ttlMs: 1_000,
+          now: () => 100,
+        }),
+      ),
     ),
   );
   expect(result.value).toBe("healthy");

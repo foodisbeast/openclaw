@@ -30,61 +30,48 @@ function buildModel(id: string, supportsUsageInStreaming?: boolean): ModelDefini
   };
 }
 
+function expectRetained(sourceEntries: number, requests: number, populated = false) {
+  expect(getLiveCatalogRetainedData()).toEqual([
+    {
+      structure: "catalog-source",
+      entries: sourceEntries,
+      approximateBytes: populated ? 50 : 0,
+      stringBytes: populated ? 26 : 0,
+      objects: populated ? 1 : 0,
+      truncated: false,
+    },
+    { structure: "catalog-request", entries: requests, approximateBytes: 0 },
+  ]);
+}
+
+function cache<T>(
+  keyParts: readonly unknown[],
+  load: (signal?: AbortSignal) => Promise<T>,
+  options: Omit<Parameters<typeof getCachedLiveCatalogValue<T>>[0], "keyParts" | "load"> = {},
+) {
+  return getCachedLiveCatalogValue({ keyParts, load, ...options });
+}
+
 describe("provider-catalog-shared live catalog cache", () => {
-  beforeEach(() => {
-    clearLiveCatalogCacheForTests();
-  });
+  beforeEach(() => clearLiveCatalogCacheForTests());
 
   it("reports only cache sizes across pending, shared-value, and cleared states", async () => {
     const completion = createDeferred<string[]>();
     const load = vi.fn(() => completion.promise);
-    const first = getCachedLiveCatalogValue({ keyParts: ["PRIVATE_CACHE_KEY"], load });
-    const joined = getCachedLiveCatalogValue({ keyParts: ["PRIVATE_CACHE_KEY"], load });
-    expect(getLiveCatalogRetainedData()).toEqual([
-      {
-        structure: "catalog-source",
-        entries: 0,
-        approximateBytes: 0,
-        stringBytes: 0,
-        objects: 0,
-        truncated: false,
-      },
-      { structure: "catalog-request", entries: 1, approximateBytes: 0 },
-    ]);
+    const first = cache(["PRIVATE_CACHE_KEY"], load);
+    const joined = cache(["PRIVATE_CACHE_KEY"], load);
+    expectRetained(0, 1);
 
     const payload = ["PRIVATE_MODEL"];
     completion.resolve(payload);
     expect(await first).toBe(payload);
     expect(await joined).toBe(payload);
     expect(load).toHaveBeenCalledOnce();
-    await getCachedLiveCatalogValue({
-      keyParts: ["ANOTHER_PRIVATE_KEY"],
-      load: async () => payload,
-    });
-    expect(getLiveCatalogRetainedData()).toEqual([
-      // Both cache entries retain the same array, counted once: array + slot + UTF-16 string.
-      {
-        structure: "catalog-source",
-        entries: 2,
-        approximateBytes: 50,
-        stringBytes: 26,
-        objects: 1,
-        truncated: false,
-      },
-      { structure: "catalog-request", entries: 0, approximateBytes: 0 },
-    ]);
+    await cache(["ANOTHER_PRIVATE_KEY"], async () => payload);
+    // Both entries retain one array: array + slot + UTF-16 string.
+    expectRetained(2, 0, true);
     clearLiveCatalogCacheForTests();
-    expect(getLiveCatalogRetainedData()).toEqual([
-      {
-        structure: "catalog-source",
-        entries: 0,
-        approximateBytes: 0,
-        stringBytes: 0,
-        objects: 0,
-        truncated: false,
-      },
-      { structure: "catalog-request", entries: 0, approximateBytes: 0 },
-    ]);
+    expectRetained(0, 0);
   });
 
   it("samples cached plugin data without invoking proxy traps or custom iterators", async () => {
@@ -96,9 +83,7 @@ describe("provider-catalog-shared live catalog cache", () => {
       Object.defineProperty(value, Symbol.iterator, { value: executePlugin }),
     );
     const payload = { opaque, collections };
-    await expect(
-      getCachedLiveCatalogValue({ keyParts: ["opaque-plugin-data"], load: async () => payload }),
-    ).resolves.toBe(payload);
+    await expect(cache(["opaque-plugin-data"], async () => payload)).resolves.toBe(payload);
     expect(getLiveCatalogRetainedData()[0]).toMatchObject({
       structure: "catalog-source",
       entries: 1,
@@ -111,9 +96,7 @@ describe("provider-catalog-shared live catalog cache", () => {
     const reason = new Error("catalog owner closed");
     const load = vi.fn(async () => "unexpected");
     await expect(
-      getCachedLiveCatalogValue({
-        keyParts: ["cancelled"],
-        load,
+      cache(["cancelled"], load, {
         signal: AbortSignal.abort(reason),
       }),
     ).rejects.toBe(reason);
@@ -125,17 +108,13 @@ describe("provider-catalog-shared live catalog cache", () => {
     const controllers = Array.from({ length: 99 }, () => new AbortController());
     const load = vi.fn(() => completion.promise);
     const pending = controllers.map((controller, index) =>
-      getCachedLiveCatalogValue({
-        keyParts: ["pending"],
-        load,
+      cache(["pending"], load, {
         signal: controller.signal,
         ttlMs: 1,
         now: () => index * 2,
       }),
     );
-    const retained = getCachedLiveCatalogValue({
-      keyParts: ["pending"],
-      load,
+    const retained = cache(["pending"], load, {
       ttlMs: 1,
       now: () => 198,
     });
@@ -143,9 +122,7 @@ describe("provider-catalog-shared live catalog cache", () => {
       controllers.forEach((controller) => controller.abort(new Error("observer closed")));
       await Promise.allSettled(pending);
       expect(load).toHaveBeenCalledTimes(100);
-      await expect(
-        getCachedLiveCatalogValue({ keyParts: ["overflow"], load: async () => "ready" }),
-      ).resolves.toBe("ready");
+      await expect(cache(["overflow"], async () => "ready")).resolves.toBe("ready");
     } finally {
       completion.resolve("settled");
       await Promise.allSettled([...pending, retained]);
@@ -157,16 +134,12 @@ describe("provider-catalog-shared live catalog cache", () => {
     const completion = createDeferred<string>();
     const load = vi.fn(() => completion.promise);
     const keyParts = ["evicted", 0];
-    const first = getCachedLiveCatalogValue({ keyParts, load, signal: controller.signal });
-    const survivor = getCachedLiveCatalogValue({ keyParts, load });
-    const pending = Array.from({ length: 99 }, (_, index) =>
-      getCachedLiveCatalogValue({ keyParts: ["evicted", index + 1], load }),
-    );
+    const first = cache(keyParts, load, { signal: controller.signal });
+    const survivor = cache(keyParts, load);
+    const pending = Array.from({ length: 99 }, (_, index) => cache(["evicted", index + 1], load));
     const settled = Promise.allSettled([first, survivor, ...pending]);
     try {
-      await expect(
-        getCachedLiveCatalogValue({ keyParts: ["overflow"], load: async () => "ready" }),
-      ).resolves.toBe("ready");
+      await expect(cache(["overflow"], async () => "ready")).resolves.toBe("ready");
       const reason = new Error("evicted consumer closed");
       controller.abort(reason);
       await expect(first).rejects.toBe(reason);
@@ -174,9 +147,7 @@ describe("provider-catalog-shared live catalog cache", () => {
       completion.resolve("original");
       await expect(survivor).resolves.toBe("original");
       await settled;
-      await expect(
-        getCachedLiveCatalogValue({ keyParts, load: async () => "replacement" }),
-      ).resolves.toBe("replacement");
+      await expect(cache(keyParts, async () => "replacement")).resolves.toBe("replacement");
     } finally {
       completion.resolve("original");
       controller.abort();
@@ -189,19 +160,19 @@ describe("provider-catalog-shared live catalog cache", () => {
     const completion = createDeferred<string>();
     const load = vi.fn(() => completion.promise);
     const keyParts = ["cancelled-shared"];
-    const first = getCachedLiveCatalogValue({ keyParts, load, signal: controller.signal });
+    const first = cache(keyParts, load, { signal: controller.signal });
     const reason = new Error("last consumer left");
     try {
       controller.abort(reason);
       const replacementLoad = vi.fn(async () => "replacement");
-      const next = getCachedLiveCatalogValue({ keyParts, load: replacementLoad });
+      const next = cache(keyParts, replacementLoad);
       completion.resolve("admitted result");
       await Promise.allSettled([first, next]);
       await expect(first).rejects.toBe(reason);
       await expect(next).resolves.toBe("admitted result");
       expect(replacementLoad).not.toHaveBeenCalled();
       expect(load).toHaveBeenCalledOnce();
-      await expect(getCachedLiveCatalogValue({ keyParts, load })).resolves.toBe("admitted result");
+      await expect(cache(keyParts, load)).resolves.toBe("admitted result");
       expect(load).toHaveBeenCalledOnce();
     } finally {
       completion.resolve("admitted result");
@@ -209,52 +180,47 @@ describe("provider-catalog-shared live catalog cache", () => {
     }
   });
 
-  it.each([64_000])(
-    "retains slow successful catalogs without extending absolute expiry %s",
-    async (absoluteExpiry) => {
-      let now = 1_000;
-      const pending = createDeferred<string>();
-      const load = vi.fn(() => pending.promise);
-      const read = () =>
-        captureProviderCatalogExpiries(() =>
-          withProviderCatalogExpiry(
-            async () => {
-              recordLiveCatalogExpiry(absoluteExpiry);
-              return getCachedLiveCatalogValue({
-                keyParts: ["slow-provider", absoluteExpiry],
-                load,
-                now: () => now,
-              });
-            },
-            () => ["fixture"],
-          ),
-        );
+  it("retains slow successful catalogs without extending absolute expiry", async () => {
+    const absoluteExpiry = 64_000;
+    let now = 1_000;
+    const pending = createDeferred<string>();
+    const load = vi.fn(() => pending.promise);
+    const read = () =>
+      captureProviderCatalogExpiries(() =>
+        withProviderCatalogExpiry(
+          async () => {
+            recordLiveCatalogExpiry(absoluteExpiry);
+            return cache(["slow-provider", absoluteExpiry], load, {
+              now: () => now,
+            });
+          },
+          () => ["fixture"],
+        ),
+      );
 
-      const first = read();
-      now = 63_600;
-      pending.resolve("usable");
-      const completed = await first;
-      expect(completed.value).toBe("usable");
-      const expectedExpiry = absoluteExpiry;
-      expect(completed.providerExpiries.get("fixture")).toBe(expectedExpiry);
+    const first = read();
+    now = 63_600;
+    pending.resolve("usable");
+    const completed = await first;
+    expect(completed.value).toBe("usable");
+    expect(completed.providerExpiries.get("fixture")).toBe(absoluteExpiry);
 
-      now = 63_800;
-      const cached = await read();
-      expect(cached.value).toBe("usable");
-      expect(cached.providerExpiries.get("fixture")).toBe(expectedExpiry);
-      expect(load).toHaveBeenCalledOnce();
+    now = 63_800;
+    const cached = await read();
+    expect(cached.value).toBe("usable");
+    expect(cached.providerExpiries.get("fixture")).toBe(absoluteExpiry);
+    expect(load).toHaveBeenCalledOnce();
 
-      now = 93_600;
-      await read();
-      expect(load).toHaveBeenCalledTimes(2);
-    },
-  );
+    now = 93_600;
+    await read();
+    expect(load).toHaveBeenCalledTimes(2);
+  });
 
   it.each(["resolve", "overflow"] as const)(
     "bypasses a warm cache without modifying it when the uncached loader will %s",
     async (outcome) => {
       const keyParts = ["provider", "models"];
-      await getCachedLiveCatalogValue({ keyParts, load: async () => "cached" });
+      await cache(keyParts, async () => "cached");
       const controller = new AbortController();
       let calls = 0;
       const load = vi.fn((signal?: AbortSignal) => {
@@ -266,9 +232,7 @@ describe("provider-catalog-shared live catalog cache", () => {
       const shouldCache = vi.fn(() => false);
       const reads = outcome === "overflow" ? 2 : 1;
       for (let index = 0; index < reads; index++) {
-        const fresh = getCachedLiveCatalogValue({
-          keyParts,
-          load,
+        const fresh = cache(keyParts, load, {
           shouldCache,
           signal: controller.signal,
           ttlMs: outcome === "overflow" ? 1 : 0,
@@ -279,7 +243,7 @@ describe("provider-catalog-shared live catalog cache", () => {
         );
       }
       expect(shouldCache).not.toHaveBeenCalled();
-      await expect(getCachedLiveCatalogValue({ keyParts, load })).resolves.toBe("cached");
+      await expect(cache(keyParts, load)).resolves.toBe("cached");
       expect(load).toHaveBeenCalledTimes(reads);
     },
   );
@@ -291,9 +255,7 @@ describe("provider-catalog-shared live catalog cache", () => {
       const keyParts = ["provider", "models"];
       const pending = createDeferred<string>();
       const error = new Error("expired failure");
-      const first = getCachedLiveCatalogValue({
-        keyParts,
-        load: () => pending.promise,
+      const first = cache(keyParts, () => pending.promise, {
         ttlMs: 100,
         now: () => now,
         shouldCache: () => {
@@ -304,12 +266,11 @@ describe("provider-catalog-shared live catalog cache", () => {
         },
       });
       now = 1_101;
-      const replacement = getCachedLiveCatalogValue({
+      const replacement = cache(
         keyParts,
-        load: () => (outcome === "same-promise" ? pending.promise : Promise.resolve("replacement")),
-        ttlMs: 100,
-        now: () => now,
-      });
+        () => (outcome === "same-promise" ? pending.promise : Promise.resolve("replacement")),
+        { ttlMs: 100, now: () => now },
+      );
       pending.resolve("expired");
       if (outcome === "predicate-throw") {
         await expect(first).rejects.toBe(error);
@@ -319,9 +280,7 @@ describe("provider-catalog-shared live catalog cache", () => {
       const expected = outcome === "same-promise" ? "expired" : "replacement";
       await expect(replacement).resolves.toBe(expected);
       const load = vi.fn(async () => "unnecessary reload");
-      await expect(getCachedLiveCatalogValue({ keyParts, load, now: () => now })).resolves.toBe(
-        expected,
-      );
+      await expect(cache(keyParts, load, { now: () => now })).resolves.toBe(expected);
       expect(load).not.toHaveBeenCalled();
     },
   );
@@ -349,46 +308,43 @@ describe("provider-catalog-shared native streaming usage compat", () => {
 });
 
 describe("provider-catalog-shared configured catalog entries", () => {
-  it.each([
-    { providerId: "kilocode", prefix: "google/", input: ["text", "image", "video", "audio"] },
-  ] satisfies Array<{ providerId: string; prefix: string; input: ModelDefinitionConfig["input"] }>)(
-    "normalizes $providerId Gemini ids while preserving configured modalities",
-    ({ providerId, prefix, input }) => {
-      expect(
-        readConfiguredProviderCatalogEntries({
-          providerId,
-          config: {
-            models: {
-              providers: {
-                [providerId]: {
-                  baseUrl: "https://catalog.example/v1",
-                  models: [
-                    {
-                      ...buildModel(`${prefix}gemini-3-pro-preview`),
-                      name: "Gemini 3 Pro Preview",
-                      input,
-                      reasoning: true,
-                      contextWindow: 1048576,
-                      maxTokens: 65536,
-                    },
-                  ],
-                },
+  it("normalizes kilocode Gemini ids while preserving configured modalities", () => {
+    const providerId = "kilocode";
+    const prefix = "google/";
+    const input: ModelDefinitionConfig["input"] = ["text", "image", "video", "audio"];
+    const model = {
+      ...buildModel(`${prefix}gemini-3-pro-preview`),
+      name: "Gemini 3 Pro Preview",
+      input,
+      reasoning: true,
+      contextWindow: 1048576,
+      maxTokens: 65536,
+    };
+    expect(
+      readConfiguredProviderCatalogEntries({
+        providerId,
+        config: {
+          models: {
+            providers: {
+              [providerId]: {
+                baseUrl: "https://catalog.example/v1",
+                models: [model],
               },
             },
           },
-        }),
-      ).toEqual([
-        {
-          provider: providerId,
-          id: `${prefix}gemini-3.1-pro-preview`,
-          name: "Gemini 3 Pro Preview",
-          input,
-          reasoning: true,
-          contextWindow: 1048576,
         },
-      ]);
-    },
-  );
+      }),
+    ).toEqual([
+      {
+        provider: providerId,
+        id: `${prefix}gemini-3.1-pro-preview`,
+        name: "Gemini 3 Pro Preview",
+        input,
+        reasoning: true,
+        contextWindow: 1048576,
+      },
+    ]);
+  });
 });
 
 describe("provider-catalog-shared manifest provider configs", () => {

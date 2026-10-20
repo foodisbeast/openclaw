@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ChannelReplayGuard } from "./channel-replay-guard.js";
 import { createChannelReplayGuard } from "./persistent-dedupe.js";
 
 type ReplayEvent = {
@@ -7,14 +8,18 @@ type ReplayEvent = {
 };
 
 function createGuard() {
-  return createChannelReplayGuard<ReplayEvent>({
+  const guard = createChannelReplayGuard<ReplayEvent>({
     dedupe: { ttlMs: 10_000, memoryMaxSize: 100 },
     buildReplayKey: (event) => event.keys,
     namespace: (event) => event.accountId,
   });
+  return Object.assign(guard, {
+    claimKeys: (...keys: string[]) => guard.claim({ accountId: "work", keys }),
+    own: async (...keys: string[]) => expectClaimed(await guard.claim({ accountId: "work", keys })),
+  });
 }
 
-async function expectClaimed(claim: Awaited<ReturnType<ReturnType<typeof createGuard>["claim"]>>) {
+async function expectClaimed(claim: Awaited<ReturnType<ChannelReplayGuard<ReplayEvent>["claim"]>>) {
   expect(claim.kind).toBe("claimed");
   if (claim.kind !== "claimed") {
     throw new Error(`expected claimed result, received ${claim.kind}`);
@@ -41,14 +46,10 @@ describe("createChannelReplayGuard", () => {
 
   it("does not let a mixed claim commit another claim's in-flight key", async () => {
     const guard = createGuard();
-    const sharedOwner = await expectClaimed(
-      await guard.claim({ accountId: "work", keys: ["shared", "first-only"] }),
-    );
-    const mixedOwner = await expectClaimed(
-      await guard.claim({ accountId: "work", keys: ["shared", "second-only"] }),
-    );
+    const sharedOwner = await guard.own("shared", "first-only");
+    const mixedOwner = await guard.own("shared", "second-only");
     expect(mixedOwner.keys).toEqual(["second-only"]);
-    const sharedWaiter = await guard.claim({ accountId: "work", keys: ["shared"] });
+    const sharedWaiter = await guard.claimKeys("shared");
 
     await expect(mixedOwner.commit()).resolves.toBe(true);
     sharedOwner.release({ error: new Error("first handler failed") });
@@ -56,24 +57,20 @@ describe("createChannelReplayGuard", () => {
     if (sharedWaiter.kind === "inflight") {
       await expect(sharedWaiter.pending).rejects.toThrow("first handler failed");
     }
-    await expect(guard.claim({ accountId: "work", keys: ["shared"] })).resolves.toMatchObject({
+    await expect(guard.claimKeys("shared")).resolves.toMatchObject({
       kind: "claimed",
     });
-    await expect(guard.claim({ accountId: "work", keys: ["second-only"] })).resolves.toEqual({
+    await expect(guard.claimKeys("second-only")).resolves.toEqual({
       kind: "duplicate",
     });
   });
 
   it("does not let the first claim commit keys owned by a mixed second claim", async () => {
     const guard = createGuard();
-    const firstOwner = await expectClaimed(
-      await guard.claim({ accountId: "work", keys: ["shared", "first-only"] }),
-    );
-    const secondOwner = await expectClaimed(
-      await guard.claim({ accountId: "work", keys: ["shared", "second-only"] }),
-    );
-    const sharedWaiter = await guard.claim({ accountId: "work", keys: ["shared"] });
-    const secondWaiter = await guard.claim({ accountId: "work", keys: ["second-only"] });
+    const firstOwner = await guard.own("shared", "first-only");
+    const secondOwner = await guard.own("shared", "second-only");
+    const sharedWaiter = await guard.claimKeys("shared");
+    const secondWaiter = await guard.claimKeys("second-only");
 
     secondOwner.release({ error: new Error("second handler failed") });
     await expect(firstOwner.commit()).resolves.toBe(true);
@@ -84,10 +81,8 @@ describe("createChannelReplayGuard", () => {
     if (secondWaiter.kind === "inflight") {
       await expect(secondWaiter.pending).rejects.toThrow("second handler failed");
     }
-    await expect(
-      guard.claim({ accountId: "work", keys: ["shared", "first-only"] }),
-    ).resolves.toEqual({ kind: "duplicate" });
-    await expect(guard.claim({ accountId: "work", keys: ["second-only"] })).resolves.toMatchObject({
+    await expect(guard.claimKeys("shared", "first-only")).resolves.toEqual({ kind: "duplicate" });
+    await expect(guard.claimKeys("second-only")).resolves.toMatchObject({
       kind: "claimed",
     });
   });

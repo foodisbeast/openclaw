@@ -8,6 +8,21 @@ import {
 } from "./plugin-state-runtime.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const failure = () => {
+  throw new Error("unavailable");
+};
+const runtime = (warn = vi.fn()) => ({ logging: { getChildLogger: () => ({ warn }) } }) as never;
+const reporter = (
+  getRuntime: Parameters<typeof createPluginStateErrorReporter>[0],
+  formatError?: Parameters<typeof createPluginStateErrorReporter>[4],
+) =>
+  createPluginStateErrorReporter(
+    getRuntime,
+    "test-plugin",
+    "state-cache",
+    "persistent state failed",
+    formatError,
+  );
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -18,12 +33,7 @@ describe("createPluginStateErrorReporter", () => {
   it("logs state failures with plugin bindings and default details", () => {
     const warn = vi.fn();
     const getChildLogger = vi.fn(() => ({ warn }));
-    const report = createPluginStateErrorReporter(
-      () => ({ logging: { getChildLogger } }) as never,
-      "test-plugin",
-      "state-cache",
-      "persistent state failed",
-    );
+    const report = reporter(() => ({ logging: { getChildLogger } }) as never);
 
     report(new Error("boom"));
 
@@ -35,26 +45,8 @@ describe("createPluginStateErrorReporter", () => {
   });
 
   it("swallows failures from runtime lookup and error formatting", () => {
-    const runtimeFailure = createPluginStateErrorReporter(
-      () => {
-        throw new Error("runtime unavailable");
-      },
-      "test-plugin",
-      "state-cache",
-      "persistent state failed",
-    );
-    const formattingFailure = createPluginStateErrorReporter(
-      () => ({ logging: { getChildLogger: () => ({ warn: vi.fn() }) } }) as never,
-      "test-plugin",
-      "state-cache",
-      "persistent state failed",
-      () => {
-        throw new Error("formatting failed");
-      },
-    );
-
-    expect(() => runtimeFailure(new Error("boom"))).not.toThrow();
-    expect(() => formattingFailure(new Error("boom"))).not.toThrow();
+    expect(() => reporter(failure)(new Error("boom"))).not.toThrow();
+    expect(() => reporter(runtime, failure)(new Error("boom"))).not.toThrow();
   });
 });
 

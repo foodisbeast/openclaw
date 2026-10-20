@@ -1,78 +1,30 @@
-// Provider auth result tests cover status result normalization and display metadata.
 import { describe, expect, it } from "vitest";
 import { MAX_DATE_TIMESTAMP_MS } from "../../packages/normalization-core/src/number-coercion.js";
 import { buildOauthProviderAuthResult } from "./provider-auth-result.js";
 
+const auth = {
+  providerId: "google",
+  defaultModel: "google/gemini-3-pro-preview",
+  access: "access-token",
+};
+const normalizedRef = "google/gemini-3.1-pro-preview";
+
 describe("buildOauthProviderAuthResult", () => {
   it("normalizes retired Gemini defaults before emitting config patches", () => {
-    const result = buildOauthProviderAuthResult({
-      providerId: "google",
-      defaultModel: "google/gemini-3-pro-preview",
-      access: "access-token",
-    });
+    const result = buildOauthProviderAuthResult(auth);
 
     expect(result.defaultModel).toBe("google/gemini-3.1-pro-preview");
     expect(result.configPatch).toEqual({
-      agents: {
-        defaults: {
-          models: {
-            "google/gemini-3.1-pro-preview": {},
-          },
-        },
-      },
+      agents: { defaults: { models: { [normalizedRef]: {} } } },
     });
   });
 
   it("normalizes retired Gemini refs inside explicit config patches", () => {
-    const result = buildOauthProviderAuthResult({
-      providerId: "google",
-      defaultModel: "google/gemini-3-pro-preview",
-      access: "access-token",
-      configPatch: {
-        agents: {
-          defaults: {
-            model: {
-              primary: "google/gemini-3-pro-preview",
-              fallbacks: ["google/gemini-3-pro-preview", "openai/gpt-5.5"],
-            },
-            models: {
-              "google/gemini-3-pro-preview": { alias: "gemini" },
-            },
-          },
-        },
-        models: {
-          providers: {
-            google: {
-              baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-              headers: { Authorization: undefined, "X-Route": "keep" },
-              models: [
-                {
-                  id: "google/gemini-3-pro-preview",
-                  name: "Gemini 3 Pro",
-                  contextWindow: 1_048_576,
-                  maxTokens: 65_536,
-                  input: ["text"],
-                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                  reasoning: true,
-                },
-              ],
-            },
-          },
-        },
-      },
-    });
-
-    expect(result.defaultModel).toBe("google/gemini-3.1-pro-preview");
-    expect(result.configPatch).toEqual({
+    const patch = (ref: string) => ({
       agents: {
         defaults: {
-          model: {
-            primary: "google/gemini-3.1-pro-preview",
-            fallbacks: ["google/gemini-3.1-pro-preview", "openai/gpt-5.5"],
-          },
-          models: {
-            "google/gemini-3.1-pro-preview": { alias: "gemini" },
-          },
+          model: { primary: ref, fallbacks: [ref, "openai/gpt-5.5"] },
+          models: { [ref]: { alias: "gemini" } },
         },
       },
       models: {
@@ -82,25 +34,28 @@ describe("buildOauthProviderAuthResult", () => {
             headers: { Authorization: undefined, "X-Route": "keep" },
             models: [
               {
-                id: "google/gemini-3.1-pro-preview",
+                id: ref,
                 name: "Gemini 3 Pro",
                 contextWindow: 1_048_576,
                 maxTokens: 65_536,
-                input: ["text"],
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                input: ["text" as const],
                 reasoning: true,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               },
             ],
           },
         },
       },
     });
+    const result = buildOauthProviderAuthResult({ ...auth, configPatch: patch(auth.defaultModel) });
+
+    expect(result.defaultModel).toBe("google/gemini-3.1-pro-preview");
+    expect(result.configPatch).toEqual(patch(normalizedRef));
 
     expect(
       buildOauthProviderAuthResult({
-        providerId: "google",
-        defaultModel: "google/gemini-3.1-pro-preview",
-        access: "access-token",
+        ...auth,
+        defaultModel: normalizedRef,
         configPatch: result.configPatch,
       }).configPatch,
     ).toBe(result.configPatch);
@@ -108,9 +63,8 @@ describe("buildOauthProviderAuthResult", () => {
 
   it("omits OAuth expiry values outside the Date timestamp range", () => {
     const result = buildOauthProviderAuthResult({
-      providerId: "google",
-      defaultModel: "google/gemini-3.1-pro-preview",
-      access: "access-token",
+      ...auth,
+      defaultModel: normalizedRef,
       expires: MAX_DATE_TIMESTAMP_MS + 1,
     });
 
