@@ -37,6 +37,11 @@ const installationReplacementWarning =
 const completedAtMs = Date.UTC(2026, 8, 19, 12);
 const historyMessage = `Previous installation replacement (${new Date(completedAtMs).toISOString()}): ${reason}`;
 const historyTitle = "Previous Gateway installation replacement";
+const historyFinding = {
+  checkId: "core/doctor/gateway-health",
+  severity: "info",
+  message: historyMessage,
+};
 const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
 beforeEach(async () => {
   vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-doctor-replacement-"));
@@ -83,9 +88,8 @@ it.each([true, false])("reports history independently of reachability (%s)", asy
   if (!reachable) {
     mocks.call.mockRejectedValue(new Error("Gateway unavailable"));
   }
-  const result = await checkGatewayHealth({ cfg: {}, runtime });
+  expect(await checkGatewayHealth({ cfg: {}, runtime })).toMatchObject({ healthOk: reachable });
   expect(mocks.call).toHaveBeenCalledWith(expect.objectContaining({ method: "status" }));
-  expect(result.healthOk).toBe(reachable);
   expect(mocks.note).toHaveBeenCalledWith(historyMessage, historyTitle);
 });
 
@@ -101,25 +105,15 @@ it.each(["healthy", "offline", "unprepared", "exec", "replaced"] as const)(
     };
     setup[probe]();
     const findings = await collectGatewayHealthFindings({ cfg: {}, env: process.env });
-    expect(findings).toContainEqual(
-      expect.objectContaining({
-        checkId: "core/doctor/gateway-health",
-        severity: "info",
-        message: historyMessage,
-      }),
+    const warning = {
+      severity: "warning",
+      ...(probe === "replaced"
+        ? { checkId: "core/doctor/gateway-health", message: installationReplacementWarning }
+        : {}),
+    };
+    expect(findings).toMatchObject(
+      probe === "healthy" ? [historyFinding] : [historyFinding, warning],
     );
-    if (probe === "healthy") {
-      expect(findings).toHaveLength(1);
-    } else {
-      expect(findings).toContainEqual(
-        expect.objectContaining({
-          severity: "warning",
-          ...(probe === "replaced"
-            ? { checkId: "core/doctor/gateway-health", message: installationReplacementWarning }
-            : {}),
-        }),
-      );
-    }
     if (probe === "unprepared" || probe === "exec") {
       expect(mocks.call).not.toHaveBeenCalled();
     }
