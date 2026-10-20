@@ -47,8 +47,8 @@ const checks = {
   ...sessionInputChecks,
   ...transcriptChecks,
   ...historyStateChecks,
+  isSessionParticipantIdentity,
 };
-
 const activity = { itemId: "tool-1", phase: "start", kind: "tool", title: "Read file" };
 const approval = {
   id: "approval:1",
@@ -67,12 +67,7 @@ const approval = {
     allowedDecisions: ["allow-once", "deny"],
   },
 };
-const goalIdentity = {
-  sessionKey: "agent:main:work",
-  goalId: "goal-1",
-  operationId: "operation-1",
-  issuedAtMs: 1,
-};
+const goalIdentity = { sessionKey: "s", goalId: "g", operationId: "o", issuedAtMs: 1 };
 const reaction = {
   sessionKey: "s",
   agentId: "main",
@@ -83,12 +78,7 @@ const reaction = {
   actor: { type: "human", id: "user-1" },
   reactions: [],
 };
-const voice = {
-  changeId: "change-1",
-  voiceSessionId: "voice-1",
-  sessionKey: "s",
-  voice: "voice-a",
-};
+const voice = { changeId: "c", voiceSessionId: "v", sessionKey: "s", voice: "a" };
 const restriction = {
   code: "AGENT_RUNTIME_RESTRICTED",
   runtimeId: "native",
@@ -97,73 +87,48 @@ const restriction = {
 };
 const observer = { sessionKey: "s", revision: 1, updatedAt: 0, health: "on-track" };
 const progress = { sessionKey: "s", revision: 1, updatedAt: 0 };
+const replay = { sessionKey: "s", updatedAtMs: 1, truncated: false };
 const createFields = SessionsCreateParamsSchema.properties;
-const fixtures: Array<{
-  name: string;
-  schema: TSchema;
-  check: (value: unknown) => boolean;
-  valid: unknown;
-  invalid: unknown;
-}> = [
-  {
-    name: "board snapshot",
-    schema: BoardSnapshotSchema,
-    check: checks.isBoardSnapshot,
-    valid: {
+
+// Checker, canonical schema, accepted value, rejected value.
+const fixtures: Array<[keyof typeof checks, TSchema, unknown, unknown]> = [
+  [
+    "isBoardSnapshot",
+    BoardSnapshotSchema,
+    {
       sessionKey: "agent:main:dashboard",
       revision: 1,
       tabs: [{ tabId: "overview", title: "Overview", position: 0, chatDock: "right" }],
-      widgets: [
-        {
-          name: "chart",
-          tabId: "overview",
-          contentKind: "html",
-          sizeW: 12,
-          sizeH: 8,
-          position: 0,
-          grantState: "none",
-          revision: 1,
-        },
-      ],
+      widgets: [{
+        name: "chart", tabId: "overview", contentKind: "html", sizeW: 12, sizeH: 8,
+        position: 0, grantState: "none", revision: 1,
+      }],
     },
-    invalid: { sessionKey: "agent:main:dashboard", revision: 1, tabs: [], widgets: [{}] },
-  },
-  {
-    name: "sender identity",
-    schema: SessionParticipantIdentitySchema,
-    check: isSessionParticipantIdentity,
-    valid: { type: "remote", pluginId: "slack", domain: "workspace", idKind: "user", id: "user-1" },
-    invalid: { type: "profile", id: "profile-1", displayName: "Extra field" },
-  },
-  {
-    name: "session reaction",
-    schema: SessionReactionEventSchema,
-    check: checks.isSessionReactionEvent,
-    valid: reaction,
-    invalid: {
-      ...reaction,
-      reactions: [{ emoji: "👍", count: 0, identities: [] }],
-    },
-  },
-  {
-    name: "talk voice change",
-    schema: TalkVoiceChangeEventSchema,
-    check: checks.isTalkVoiceChangeEvent,
-    valid: { ...voice, phase: "requested" },
-    invalid: { ...voice, phase: "ready" },
-  },
-  {
-    name: "activity",
-    schema: AgentActivityItemSchema,
-    check: checks.isAgentActivityItem,
-    valid: activity,
-    invalid: { ...activity, startedAt: Infinity },
-  },
-  {
-    name: "agent runtime restriction",
-    schema: AgentRuntimeRestrictionErrorDetailsSchema,
-    check: checks.isAgentRuntimeRestrictionErrorDetails,
-    valid: {
+    { sessionKey: "agent:main:dashboard", revision: 1, tabs: [], widgets: [{}] },
+  ],
+  [
+    "isSessionParticipantIdentity",
+    SessionParticipantIdentitySchema,
+    { type: "remote", pluginId: "slack", domain: "workspace", idKind: "user", id: "user-1" },
+    { type: "profile", id: "profile-1", displayName: "Extra field" },
+  ],
+  [
+    "isSessionReactionEvent",
+    SessionReactionEventSchema,
+    reaction,
+    { ...reaction, reactions: [{ emoji: "👍", count: 0, identities: [] }] },
+  ],
+  [
+    "isTalkVoiceChangeEvent",
+    TalkVoiceChangeEventSchema,
+    { ...voice, phase: "requested" },
+    { ...voice, phase: "ready" },
+  ],
+  ["isAgentActivityItem", AgentActivityItemSchema, activity, { ...activity, startedAt: Infinity }],
+  [
+    "isAgentRuntimeRestrictionErrorDetails",
+    AgentRuntimeRestrictionErrorDetailsSchema,
+    {
       ...restriction,
       recovery: {
         action: "use-native-permissions",
@@ -173,40 +138,32 @@ const fixtures: Array<{
         expectedNativeRuntimeConsent: null,
       },
     },
-    invalid: {
-      ...restriction,
-      recovery: { action: "use-native-permissions", sessionId: "session-1" },
-    },
-  },
-  {
-    name: "observer",
-    schema: SessionObserverDigestSchema,
-    check: checks.isSessionObserverDigest,
-    valid: { ...observer, headline: "😀".repeat(120) },
-    invalid: { ...observer, headline: "😀".repeat(121) },
-  },
-  {
-    name: "narration",
-    schema: SessionNarrationEventSchema,
-    check: checks.isSessionNarrationEvent,
-    valid: { sessionKey: "s", runId: "r", text: "" },
-    invalid: { sessionKey: "s", runId: "r", text: "", extra: true },
-  },
-  {
-    name: "approval event",
-    schema: SessionApprovalEventSchema,
-    check: checks.isSessionApprovalEvent,
-    valid: { sessionKey: "s", updatedAtMs: 1, phase: "pending", approval },
-    invalid: { sessionKey: "s", updatedAtMs: 1, phase: "terminal", approval },
-  },
-  {
-    name: "approval replay",
-    schema: SessionApprovalReplaySchema,
-    check: checks.isSessionApprovalReplay,
-    valid: { sessionKey: "s", updatedAtMs: 1, approvals: [approval], truncated: false },
-    invalid: {
-      sessionKey: "s",
-      updatedAtMs: 1,
+    { ...restriction, recovery: { action: "use-native-permissions", sessionId: "session-1" } },
+  ],
+  [
+    "isSessionObserverDigest",
+    SessionObserverDigestSchema,
+    { ...observer, headline: "😀".repeat(120) },
+    { ...observer, headline: "😀".repeat(121) },
+  ],
+  [
+    "isSessionNarrationEvent",
+    SessionNarrationEventSchema,
+    { sessionKey: "s", runId: "r", text: "" },
+    { sessionKey: "s", runId: "r", text: "", extra: true },
+  ],
+  [
+    "isSessionApprovalEvent",
+    SessionApprovalEventSchema,
+    { sessionKey: "s", updatedAtMs: 1, phase: "pending", approval },
+    { sessionKey: "s", updatedAtMs: 1, phase: "terminal", approval },
+  ],
+  [
+    "isSessionApprovalReplay",
+    SessionApprovalReplaySchema,
+    { ...replay, approvals: [approval] },
+    {
+      ...replay,
       approvals: [
         {
           ...approval,
@@ -216,75 +173,45 @@ const fixtures: Array<{
           },
         },
       ],
-      truncated: false,
     },
-  },
-  {
-    name: "goal update",
-    schema: SessionsGoalUpdateParamsSchema,
-    check: checks.isSessionsGoalUpdateParams,
-    valid: { ...goalIdentity, action: "edit", objective: "Ship" },
-    invalid: { ...goalIdentity, action: "pause", objective: "Ship" },
-  },
-  {
-    name: "goal clear",
-    schema: SessionsGoalClearParamsSchema,
-    check: checks.isSessionsGoalClearParams,
-    valid: goalIdentity,
-    invalid: { ...goalIdentity, issuedAtMs: -1 },
-  },
-  {
-    name: "worktree source",
-    schema: createFields.worktreeSource,
-    check: checks.isSessionWorktreeSource,
-    valid: "empty",
-    invalid: "repository",
-  },
-  {
-    name: "device folder",
-    schema: createFields.deviceFolder,
-    check: checks.isSessionDeviceFolder,
-    valid: { deviceId: "device-1", path: "/work" },
-    invalid: { deviceId: "device-1", path: "" },
-  },
-  {
-    name: "repository",
-    schema: createFields.repository,
-    check: checks.isSessionRepository,
-    valid: { url: "https://example.test/repo.git" },
-    invalid: { url: "https://example.test/repo.git", unexpected: 1 },
-  },
-  {
-    name: "fast mode",
-    schema: createFields.fastMode,
-    check: checks.isSessionFastMode,
-    valid: "ultrafast",
-    invalid: "fast",
-  },
-  {
-    name: "title source",
-    schema: createFields.titleSource,
-    check: checks.isSessionTitleSource,
-    valid: "😀".repeat(1000),
-    invalid: "😀".repeat(1001),
-  },
-  {
-    name: "permission mode",
-    schema: SessionPermissionModeSchema,
-    check: checks.isSessionPermissionMode,
-    valid: "guarded",
-    invalid: "unrestricted",
-  },
-  {
-    name: "tool overrides",
-    schema: SessionToolOverridesSchema,
-    check: checks.isSessionToolOverrides,
-    valid: { mcpToolsDeny: { server: ["tool"] } },
-    invalid: { mcpToolsDeny: { server: [123] } },
-  },
-  {
-    name: "cached history metadata",
-    schema: Type.Object(
+  ],
+  [
+    "isSessionsGoalUpdateParams",
+    SessionsGoalUpdateParamsSchema,
+    { ...goalIdentity, action: "edit", objective: "Ship" },
+    { ...goalIdentity, action: "pause", objective: "Ship" },
+  ],
+  [
+    "isSessionsGoalClearParams",
+    SessionsGoalClearParamsSchema,
+    goalIdentity,
+    { ...goalIdentity, issuedAtMs: -1 },
+  ],
+  ["isSessionWorktreeSource", createFields.worktreeSource, "empty", "repository"],
+  [
+    "isSessionDeviceFolder",
+    createFields.deviceFolder,
+    { deviceId: "device-1", path: "/work" },
+    { deviceId: "device-1", path: "" },
+  ],
+  [
+    "isSessionRepository",
+    createFields.repository,
+    { url: "https://example.test/repo.git" },
+    { url: "https://example.test/repo.git", unexpected: 1 },
+  ],
+  ["isSessionFastMode", createFields.fastMode, "ultrafast", "fast"],
+  ["isSessionTitleSource", createFields.titleSource, "😀".repeat(1000), "😀".repeat(1001)],
+  ["isSessionPermissionMode", SessionPermissionModeSchema, "guarded", "unrestricted"],
+  [
+    "isSessionToolOverrides",
+    SessionToolOverridesSchema,
+    { mcpToolsDeny: { server: ["tool"] } },
+    { mcpToolsDeny: { server: [123] } },
+  ],
+  [
+    "isChatHistoryState",
+    Type.Object(
       {
         stateRevision: Type.Required(ChatHistoryParamsSchema).properties.knownState,
         pendingInputs: Type.Optional(ChatPendingInputsPageSchema),
@@ -292,47 +219,44 @@ const fixtures: Array<{
       },
       { additionalProperties: false },
     ),
-    check: checks.isChatHistoryState,
-    valid: {
+    {
       stateRevision: { pendingInputs: "inputs-1", sessionInfo: "session-1" },
       pendingInputs: { items: [], total: 0 },
       sessionInfo: { key: "s", kind: "direct", sessionId: "session-1" },
     },
-    invalid: {
+    {
       stateRevision: { sessionInfo: "session-1" },
       sessionInfo: { key: "s", kind: "direct", owner: { actor: { type: "unknown" } } },
     },
-  },
-  {
-    name: "transcript metadata",
-    schema: Type.Pick(SessionRowSchema, CHAT_TRANSCRIPT_METADATA_KEYS),
-    check: checks.isChatTranscriptMetadata,
-    valid: { key: "s", kind: "direct", owner: { actor: { type: "human" } } },
-    invalid: { key: "s", kind: "direct", owner: { actor: { type: "unknown" } } },
-  },
-  {
-    name: "progress",
-    schema: ProgressCardSchema,
-    check: checks.isProgressCard,
-    valid: { ...progress, steps: [{ step: "Ship", status: "pending" }] },
-    invalid: { ...progress, steps: [{ step: "Ship", status: "unknown" }] },
-  },
+  ],
+  [
+    "isChatTranscriptMetadata",
+    Type.Pick(SessionRowSchema, CHAT_TRANSCRIPT_METADATA_KEYS),
+    { key: "s", kind: "direct", owner: { actor: { type: "human" } } },
+    { key: "s", kind: "direct", owner: { actor: { type: "unknown" } } },
+  ],
+  [
+    "isProgressCard",
+    ProgressCardSchema,
+    { ...progress, steps: [{ step: "Ship", status: "pending" }] },
+    { ...progress, steps: [{ step: "Ship", status: "unknown" }] },
+  ],
 ];
 
 describe("standalone browser protocol validation", () => {
   it("keeps bounded display positions and strips unrelated persisted fields", () => {
-    expect(
-      readTranscriptDisplayPosition({
-        source: "🦞".repeat(128),
-        rawSeq: 3,
-        unknown: true,
-        activity: { afterRawSeq: 2, scopeId: "🦞".repeat(1024), startOrder: 0, unknown: true },
-      }),
-    ).toEqual({
+    const expected = {
       source: "🦞".repeat(128),
       rawSeq: 3,
       activity: { afterRawSeq: 2, scopeId: "🦞".repeat(1024), startOrder: 0 },
-    });
+    };
+    expect(
+      readTranscriptDisplayPosition({
+        ...expected,
+        unknown: true,
+        activity: { ...expected.activity, unknown: true },
+      }),
+    ).toEqual(expected);
     for (const invalid of [
       { source: "🦞".repeat(129), rawSeq: 0 },
       { source: "s", rawSeq: Number.MAX_SAFE_INTEGER + 1 },
@@ -344,8 +268,9 @@ describe("standalone browser protocol validation", () => {
   });
 
   it.each(fixtures)(
-    "preserves canonical $name acceptance and rejection",
-    ({ schema, check, valid, invalid }) => {
+    "preserves canonical %s acceptance and rejection",
+    (name, schema, valid, invalid) => {
+      const check = checks[name];
       expect(Value.Check(schema, valid)).toBe(true);
       expect(check(valid)).toBe(true);
       expect(Value.Check(schema, invalid)).toBe(false);

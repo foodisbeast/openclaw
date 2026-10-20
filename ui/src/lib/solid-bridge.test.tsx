@@ -8,7 +8,7 @@ import {
   flush,
   onCleanup,
 } from "solid-js";
-import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ApplicationContext } from "../app/context.ts";
 import { ShellLayoutOwner } from "../app/shell-layout-owner.ts";
 import { ShellLayoutBoundary } from "../app/shell-layout-traits-solid.tsx";
@@ -38,16 +38,8 @@ const Bridge = defineSolidBridge<Props, Methods>(
           {props.label}:{props.count}:{String(props.enabled)}
         </output>
         <button
-          type="button"
           onClick={() =>
-            host.dispatchEvent(
-              new CustomEvent("bridge-action", {
-                detail: props.payload,
-                bubbles: true,
-                composed: true,
-                cancelable: true,
-              }),
-            )
+            host.dispatchEvent(new CustomEvent("bridge-action", { detail: props.payload }))
           }
         >
           Action
@@ -80,10 +72,6 @@ const Bridge = defineSolidBridge<Props, Methods>(
     },
   },
 );
-
-function createHost() {
-  return new Bridge.Element();
-}
 
 async function mountHost<T extends SolidBridgeElement<object>>(host: T, parent = document.body) {
   parent.append(host);
@@ -134,20 +122,18 @@ it("runs Solid caller effects after the parent render completes", () => {
 });
 
 beforeEach(() => {
-  mounted.mockClear();
-  disposed.mockClear();
-  connected.mockClear();
-  disconnected.mockClear();
+  vi.clearAllMocks();
   changed.mockReset();
 });
 afterEach(async () => {
   cleanup();
   document.body.replaceChildren();
+  vi.restoreAllMocks();
   await Promise.resolve();
 });
 
 it("mounts once and preserves setup reads with an application provider", async () => {
-  const host = createHost();
+  const host = new Bridge.Element();
   host.setAttribute("label", "attribute");
   host.setAttribute("item-count", "4");
   host.show();
@@ -174,7 +160,7 @@ it("mounts once and preserves setup reads with an application provider", async (
 });
 
 it("publishes changed properties synchronously before rendering and suppresses equal assignments", async () => {
-  const host = await mountHost(createHost());
+  const host = await mountHost(new Bridge.Element());
   const observations: string[] = [];
   changed.mockImplementation((current, key) => {
     observations.push(`${key}:${current.label}:${current.querySelector("output")?.textContent}`);
@@ -185,7 +171,6 @@ it("publishes changed properties synchronously before rendering and suppresses e
   host.label = "next";
   expect(changed).toHaveBeenCalledTimes(1);
   await expectOutput(host, "next:0:false");
-  changed.mockReset();
 });
 
 it("batches property bursts without invalidating unrelated Solid computations", async () => {
@@ -249,7 +234,7 @@ it("keeps the same root across moves and releases/recreates it after a real disc
   const left = document.createElement("div");
   const right = document.createElement("div");
   document.body.append(left, right);
-  const host = createHost();
+  const host = new Bridge.Element();
   left.append(host);
   expect(connected).toHaveBeenCalledExactlyOnceWith(host);
   await host.updateComplete;
@@ -277,7 +262,7 @@ it("keeps the same root across moves and releases/recreates it after a real disc
 it("preserves caller content through updates and reconnects", async () => {
   const container = document.createElement("div");
   document.body.append(container);
-  const host = createHost();
+  const host = new Bridge.Element();
   const input = document.createElement("input");
   input.value = "first";
   host.append(input);
@@ -286,19 +271,17 @@ it("preserves caller content through updates and reconnects", async () => {
   input.value = "next";
   const second = document.createElement("input");
   outlet.append(second);
-  expect(host.querySelector("input")).toBe(input);
   expect(input.value).toBe("next");
-  expect(host.querySelectorAll("input")).toHaveLength(2);
+  expect([...host.querySelectorAll("input")]).toEqual([input, second]);
 
   host.remove();
   await Promise.resolve();
   await mountHost(host, container);
-  expect(host.querySelector("input")).toBe(input);
-  expect(host.querySelectorAll("input")).toHaveLength(2);
+  expect([...host.querySelectorAll("input")]).toEqual([input, second]);
   input.value = "last";
   second.remove();
   expect(input.value).toBe("last");
-  expect(host.querySelectorAll("input")).toHaveLength(1);
+  expect([...host.querySelectorAll("input")]).toEqual([input]);
 });
 
 it("keeps a tooltip's named caller slots live through DOM updates and reconnect", async () => {
@@ -323,8 +306,7 @@ it("keeps a tooltip's named caller slots live through DOM updates and reconnect"
   update("next");
   await host.updateComplete;
   expect(host.querySelector("button")).toBe(trigger);
-  expect(trigger.textContent).toBe("next");
-  expect(content.textContent).toBe("Rich next");
+  expect([trigger.textContent, content.textContent]).toEqual(["next", "Rich next"]);
   host.remove();
   await Promise.resolve();
   await mountHost(host, container);
@@ -332,8 +314,7 @@ it("keeps a tooltip's named caller slots live through DOM updates and reconnect"
   expect(assigned()).toEqual([content]);
   update("last");
   await host.updateComplete;
-  expect(trigger.textContent).toBe("last");
-  expect(content.textContent).toBe("Rich last");
+  expect([trigger.textContent, content.textContent]).toEqual(["last", "Rich last"]);
 });
 
 it("uses a single Solid-owned host and preserves reactive props, children, events, and disposal", async () => {
@@ -373,7 +354,7 @@ it("uses a single Solid-owned host and preserves reactive props, children, event
 });
 
 it("accepts property publication while a Solid owner adopts a mounted bridge", async () => {
-  const host = await mountHost(createHost());
+  const host = await mountHost(new Bridge.Element());
   const view = render(() => {
     host.label = "adopted";
     return <div>{host}</div>;
@@ -411,7 +392,6 @@ it("honors the public setter when updating an attribute", async () => {
 
 it("provides the Solid application context, rebinds replacements, and unsubscribes", async () => {
   const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-  onTestFinished(() => warning.mockRestore());
   const connection = vi.fn();
   const { seen, Bridge: ContextBridge } = contextBridge("openclaw-solid-context-test", connection);
   const first = { basePath: "/first" } as ApplicationContext;
@@ -498,19 +478,18 @@ it("publishes an imperatively mounted page's layout traits to the existing shell
   owner.contentRef(main);
   const host = await mountHost(new LayoutBridge.Element(), main);
   expect(main.classList.contains("content--toolbar-header")).toBe(true);
-  host.active = false;
-  await host.updateComplete;
-  expect(main.classList.contains("content--toolbar-header")).toBe(false);
-  host.active = true;
-  await host.updateComplete;
-  expect(main.classList.contains("content--toolbar-header")).toBe(true);
+  for (const active of [false, true]) {
+    host.active = active;
+    await host.updateComplete;
+    expect(main.classList.contains("content--toolbar-header")).toBe(active);
+  }
   host.remove();
   await Promise.resolve();
   expect(main.classList.contains("content--toolbar-header")).toBe(false);
 });
 
 it("releases a disconnected Solid root while the custom element itself is retained", async () => {
-  const host = await mountHost(createHost());
+  const host = await mountHost(new Bridge.Element());
   expect(mounted).toHaveBeenCalledTimes(1);
   const weak = new WeakRef(mounted.mock.calls[0]![0]);
   const control = new WeakRef({ control: true });

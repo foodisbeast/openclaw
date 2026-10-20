@@ -6,117 +6,97 @@ describe("formatQuotaReset", () => {
   beforeEach(() => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-05-30T12:00:00.000Z"));
   });
-  afterEach(() => {
-    vi.restoreAllMocks();
+  afterEach(() => vi.restoreAllMocks());
+  it.each([
+    [30 * 60_000, "30m"],
+    [135 * 60_000, "2h 15m"],
+    [-1, "now"],
+    [0, "now"],
+    [1, "<1m"],
+    [59_999, "<1m"],
+    [60_000, "1m"],
+  ] as const)("formats a reset %i ms away as %s", (offset, expected) => {
+    expect(formatQuotaReset(Date.now() + offset)).toBe(expected);
   });
-
-  it("returns compact relative reset windows", () => {
-    expect(formatQuotaReset(Date.now() + 30 * 60_000)).toBe("30m");
-    expect(formatQuotaReset(Date.now() + 2 * 60 * 60_000 + 15 * 60_000)).toBe("2h 15m");
-  });
-
-  it("returns <1m for sub-minute reset windows instead of 0m", () => {
-    expect(formatQuotaReset(Date.now() - 1)).toBe("now");
-    expect(formatQuotaReset(Date.now())).toBe("now");
-    expect(formatQuotaReset(Date.now() + 1)).toBe("<1m");
-    expect(formatQuotaReset(Date.now() + 59_999)).toBe("<1m");
-    expect(formatQuotaReset(Date.now() + 60_000)).toBe("1m");
-  });
-
-  it("ignores Date-invalid reset timestamps", () => {
-    expect(formatQuotaReset(8_640_000_000_000_001)).toBeNull();
-    expect(formatQuotaReset(Number.POSITIVE_INFINITY)).toBeNull();
+  it.each([8_640_000_000_000_001, Infinity])("ignores Date-invalid timestamp %s", (timestamp) => {
+    expect(formatQuotaReset(timestamp)).toBeNull();
   });
 });
 
-describe("collectProviderQuotaGroups", () => {
-  const collect = (...providers: ModelAuthStatusProvider[]) =>
-    collectProviderQuotaGroups({ ts: 1, providers }, () => true);
+function provider(
+  id: string,
+  usage: Partial<NonNullable<ModelAuthStatusProvider["usage"]>>,
+): ModelAuthStatusProvider {
+  return {
+    provider: id,
+    displayName: "Claude",
+    status: "ok",
+    profiles: [{ profileId: `${id}:default`, type: "oauth", status: "ok" }],
+    usage: { providerId: id, windows: [], ...usage },
+  };
+}
+const collect = (...providers: ModelAuthStatusProvider[]) =>
+  collectProviderQuotaGroups({ ts: 1, providers }, () => true);
 
-  function providerWithUsage(
-    provider: string,
-    usage: ModelAuthStatusProvider["usage"],
-  ): ModelAuthStatusProvider {
-    return {
-      provider,
+it("collapses providers sharing identical usage into one group", () => {
+  const usage: NonNullable<ModelAuthStatusProvider["usage"]> = {
+    providerId: "anthropic",
+    plan: "Max (20x)",
+    windows: [
+      { label: "5h", usedPercent: 21.6, resetAt: 1_800_000_000_000 },
+      { label: "Week", usedPercent: 25 },
+    ],
+    billing: [{ type: "budget", used: 157.85, limit: 400, unit: "USD", period: "month" }],
+  };
+  expect(collect(provider("anthropic", usage), provider("claude-cli", usage))).toEqual([
+    {
+      providers: ["anthropic", "claude-cli"],
       displayName: "Claude",
-      status: "ok",
-      profiles: [{ profileId: `${provider}:default`, type: "oauth", status: "ok" }],
-      usage,
-    };
-  }
-
-  it("collapses providers sharing identical usage into one group", () => {
-    const usage: ModelAuthStatusProvider["usage"] = {
-      providerId: "anthropic",
       plan: "Max (20x)",
       windows: [
-        { label: "5h", usedPercent: 21.6, resetAt: 1_800_000_000_000 },
+        { label: "5h", usedPercent: 22, resetAt: 1_800_000_000_000 },
         { label: "Week", usedPercent: 25 },
       ],
-      billing: [{ type: "budget", used: 157.85, limit: 400, unit: "USD", period: "month" }],
-    };
-    const groups = collect(
-      providerWithUsage("anthropic", usage),
-      providerWithUsage("claude-cli", usage),
-    );
+      budgets: [{ used: 157.85, limit: 400, unit: "USD" }],
+    },
+  ]);
+});
 
-    expect(groups).toEqual([
-      {
-        providers: ["anthropic", "claude-cli"],
-        displayName: "Claude",
-        plan: "Max (20x)",
-        windows: [
-          { label: "5h", usedPercent: 22, resetAt: 1_800_000_000_000 },
-          { label: "Week", usedPercent: 25 },
-        ],
-        budgets: [{ used: 157.85, limit: 400, unit: "USD" }],
-      },
-    ]);
-  });
+it("carries the account email and keeps distinct accounts in separate groups", () => {
+  const account = (id: string, accountEmail: string) =>
+    provider(id, {
+      providerId: "anthropic",
+      accountEmail,
+      windows: [{ label: "5h", usedPercent: 10 }],
+    });
+  const groups = collect(
+    account("anthropic", "work@example.com"),
+    account("claude-cli", "personal@example.com"),
+  );
+  expect(groups.map((group) => group.accountEmail)).toEqual([
+    "work@example.com",
+    "personal@example.com",
+  ]);
+});
 
-  it("carries the account email and keeps distinct accounts in separate groups", () => {
-    const account = (provider: string, accountEmail: string) =>
-      providerWithUsage(provider, {
-        providerId: "anthropic",
-        accountEmail,
-        windows: [{ label: "5h", usedPercent: 10 }],
-      });
-    const groups = collect(
-      account("anthropic", "work@example.com"),
-      account("claude-cli", "personal@example.com"),
-    );
-
-    expect(groups.map((group) => group.accountEmail)).toEqual([
-      "work@example.com",
-      "personal@example.com",
-    ]);
-  });
-
-  it("drops providers without windows or budgets and invalid budget shapes", () => {
-    const groups = collect(
-      providerWithUsage("anthropic", { providerId: "anthropic", windows: [] }),
-      providerWithUsage("openrouter", {
-        providerId: "openrouter",
-        windows: [],
+it("drops providers without windows or budgets and invalid budget shapes", () => {
+  expect(
+    collect(
+      provider("anthropic", {}),
+      provider("openrouter", {
         billing: [
           { type: "balance", amount: 10, unit: "USD" },
           { type: "budget", used: 5, limit: 0, unit: "USD" },
         ],
       }),
-      providerWithUsage("openai", {
-        providerId: "openai",
-        windows: [{ label: "Week", usedPercent: 140 }],
-      }),
-    );
-
-    expect(groups).toEqual([
-      {
-        providers: ["openai"],
-        displayName: "Claude",
-        windows: [{ label: "Week", usedPercent: 100 }],
-        budgets: [],
-      },
-    ]);
-  });
+      provider("openai", { windows: [{ label: "Week", usedPercent: 140 }] }),
+    ),
+  ).toEqual([
+    {
+      providers: ["openai"],
+      displayName: "Claude",
+      windows: [{ label: "Week", usedPercent: 100 }],
+      budgets: [],
+    },
+  ]);
 });

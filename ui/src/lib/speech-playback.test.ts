@@ -12,8 +12,6 @@ import { GatewaySpeechPlayback, resolveSpeechTextLimit } from "./speech-playback
 let started = createDeferred();
 const audio: FakeAudio[] = [];
 const players: GatewaySpeechPlayback[] = [];
-const createUrl = vi.fn(() => "blob:synthetic-speech");
-const revokeUrl = vi.fn();
 
 class FakeAudio extends EventTarget {
   play = vi.fn(async () => {
@@ -33,11 +31,9 @@ class FakeAudio extends EventTarget {
 beforeEach(() => {
   started = createDeferred();
   audio.length = 0;
-  createUrl.mockClear();
-  revokeUrl.mockClear();
   vi.stubGlobal("Audio", FakeAudio);
-  vi.spyOn(URL, "createObjectURL").mockImplementation(createUrl);
-  vi.spyOn(URL, "revokeObjectURL").mockImplementation(revokeUrl);
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:synthetic-speech");
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
 });
 
 afterEach(() => {
@@ -71,7 +67,7 @@ it.each(["tts.speak", "talk.speak"] as const)(
     expect(audio).toHaveLength(1);
     element.dispatchEvent(new Event("ended"));
     await speaking;
-    expect(revokeUrl).toHaveBeenCalledTimes(2);
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
   },
 );
 
@@ -84,7 +80,7 @@ it("uses the configured speech bound and stops before another chunk is requested
   playback.stop();
   await speaking;
   expect(request).toHaveBeenCalledTimes(1);
-  expect(revokeUrl).toHaveBeenCalledOnce();
+  expect(URL.revokeObjectURL).toHaveBeenCalledOnce();
 });
 
 it("releases a cancelled pending synthesis without playing its late result", async () => {
@@ -95,7 +91,7 @@ it("releases a cancelled pending synthesis without playing its late result", asy
   await speaking;
   pending.resolve(speechResult);
   await pending.promise;
-  expect(createUrl).not.toHaveBeenCalled();
+  expect(URL.createObjectURL).not.toHaveBeenCalled();
 });
 
 it("lets Talk supersede Read aloud and stops Talk before a new Read aloud plays", async () => {
@@ -108,7 +104,7 @@ it("lets Talk supersede Read aloud and stops Talk before a new Read aloud plays"
   talk.prepare(client, stopTalk);
   expect(firstAudio.pause).toHaveBeenCalledTimes(2);
   await first;
-  expect(revokeUrl).toHaveBeenCalledOnce();
+  expect(URL.revokeObjectURL).toHaveBeenCalledOnce();
   started = createDeferred();
   const second = setup().playback.speak(client, "Second message");
   await started.promise;
@@ -116,5 +112,5 @@ it("lets Talk supersede Read aloud and stops Talk before a new Read aloud plays"
   reading.stop();
   expectDefined(audio[2], "second Read aloud audio").dispatchEvent(new Event("ended"));
   await second;
-  expect(revokeUrl).toHaveBeenCalledTimes(2);
+  expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
 });
