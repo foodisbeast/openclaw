@@ -83,7 +83,7 @@ export function voiceRpc(
   }
   return {
     start,
-    async invoke(...args: Parameters<typeof start>) {
+    invoke: async (...args: Parameters<typeof start>) => {
       const { respond, completed } = start(...args);
       await completed;
       return respond;
