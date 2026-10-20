@@ -52,10 +52,13 @@ vi.mock("../cli-utils.js", () => ({
   },
 }));
 
-vi.mock("../../runtime.js", async () => ({
-  ...(await vi.importActual<typeof import("../../runtime.js")>("../../runtime.js")),
-  defaultRuntime: mocks.defaultRuntime,
-}));
+vi.mock("../../runtime.js", async () => {
+  const actual = await vi.importActual<typeof import("../../runtime.js")>("../../runtime.js");
+  mocks.defaultRuntime.exit.mockImplementation((code: number) => {
+    throw new actual.ExitError(code);
+  });
+  return { ...actual, defaultRuntime: mocks.defaultRuntime };
+});
 
 vi.mock("../../commands/gateway-status.js", () => ({
   gatewayStatusCommand: (opts: unknown, runtime: unknown) =>
