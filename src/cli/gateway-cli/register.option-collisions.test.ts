@@ -52,13 +52,10 @@ vi.mock("../cli-utils.js", () => ({
   },
 }));
 
-vi.mock("../../runtime.js", async () => {
-  const actual = await vi.importActual<typeof import("../../runtime.js")>("../../runtime.js");
-  mocks.defaultRuntime.exit.mockImplementation((code: number) => {
-    throw new actual.ExitError(code);
-  });
-  return { ...actual, defaultRuntime: mocks.defaultRuntime };
-});
+vi.mock("../../runtime.js", async () => ({
+  ...(await vi.importActual<typeof import("../../runtime.js")>("../../runtime.js")),
+  defaultRuntime: mocks.defaultRuntime,
+}));
 
 vi.mock("../../commands/gateway-status.js", () => ({
   gatewayStatusCommand: (opts: unknown, runtime: unknown) =>
@@ -343,33 +340,6 @@ describe("gateway register option collisions", () => {
   ])("$name", async ({ argv, assert }) => {
     await sharedProgram.parseAsync(argv, { from: "user" });
     assert();
-  });
-
-  it("preserves one busy JSON result when suspend exits nonzero", async () => {
-    const busy = {
-      status: "busy",
-      reason: "active-work",
-      retryAfterMs: 200,
-      activeCount: 1,
-      blockers: [{ kind: "root-request", count: 1, message: "1 active request" }],
-    };
-    callGatewayCli.mockResolvedValueOnce(busy);
-    const runtime = await vi.importActual<typeof import("../../runtime.js")>("../../runtime.js");
-
-    await defaultRuntime.exit.withImplementation(runtime.defaultRuntime.exit, async () => {
-      await expect(
-        sharedProgram.parseAsync(
-          ["gateway", "suspend", "--request-id", "host-operation", "--json"],
-          { from: "user" },
-        ),
-      ).rejects.toMatchObject({ name: "ExitError", code: 1 });
-    });
-
-    const stdout = defaultRuntime.writeJson.mock.calls
-      .map(([value]) => JSON.stringify(value))
-      .join("\n");
-    expect(JSON.parse(stdout)).toEqual({ ...busy, requestId: "host-operation" });
-    expect(defaultRuntime.error).not.toHaveBeenCalled();
   });
 
   it("preserves one busy JSON result when suspend exits nonzero", async () => {
