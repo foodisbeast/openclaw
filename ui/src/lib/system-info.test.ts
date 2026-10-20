@@ -53,8 +53,7 @@ it.each(changes)("retires pending and cached %s samples", async (change) => {
     const { read, request, gateway, publish, transportAborted } = setup(pending.promise);
     const refreshed = { ...deviceSystemInfo, machineName: "New host" };
     request.mockReturnValueOnce(pending.promise).mockResolvedValue(refreshed);
-    const signal = new AbortController().signal;
-    const result = read(signal);
+    const result = read();
     const rejected = settled ? undefined : aborted(result);
     if (settled) {
       pending.resolve(deviceSystemInfo);
@@ -67,9 +66,7 @@ it.each(changes)("retires pending and cached %s samples", async (change) => {
     } else {
       publish({
         ...gateway.snapshot,
-        ...(change === "client"
-          ? { client: { request } as GatewayBrowserClient }
-          : { hello: gatewayHelloForMethods(["system.info"]) }),
+        [change]: change === "client" ? { request } : gatewayHelloForMethods(["system.info"]),
       });
     }
     if (!settled) {
@@ -79,11 +76,10 @@ it.each(changes)("retires pending and cached %s samples", async (change) => {
     }
     if (change === "scopes") {
       await aborted(read());
-      expect(request).toHaveBeenCalledOnce();
-      expect(transportAborted()).toBe(true);
+      expect([request.mock.calls.length, transportAborted()]).toEqual([1, true]);
       gateway.snapshot.hello!.auth!.scopes = ["operator.read"];
     }
-    expect((await read(signal)).value).toEqual(refreshed);
+    expect((await read()).value).toEqual(refreshed);
     expect(request).toHaveBeenCalledTimes(2);
   }
 });
@@ -102,8 +98,7 @@ it("shares pending manual reads, preserves sample metadata, and refreshes only s
   vi.useFakeTimers();
   const pending = createDeferred<typeof deviceSystemInfo>();
   const { read, request, transportAborted } = setup(pending.promise);
-  const leaving = new AbortController();
-  const remaining = new AbortController();
+  const [leaving, remaining] = [new AbortController(), new AbortController()];
   const rejected = aborted(read(leaving.signal));
   const second = read(remaining.signal, { fresh: true });
   leaving.abort();

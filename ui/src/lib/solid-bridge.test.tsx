@@ -14,7 +14,6 @@ import { ShellLayoutOwner } from "../app/shell-layout-owner.ts";
 import { ShellLayoutBoundary } from "../app/shell-layout-traits-solid.tsx";
 import { createApplicationContextProvider } from "../test-helpers/application-context.ts";
 import { collectGarbageForTest } from "../test-helpers/garbage-collection.ts";
-import { mountSolid } from "../test-helpers/mount-solid.ts";
 import { ApplicationProvider, useApplication } from "./reactive/context.ts";
 import { defineSolidBridge, type SolidBridgeElement } from "./solid-bridge.ts";
 
@@ -84,12 +83,17 @@ async function expectOutput(host: SolidBridgeElement<object>, text: string) {
   expect(host.querySelector("output")?.textContent).toBe(text);
 }
 
-function contextBridge(
-  tag: string,
-  onConnect?: (host: SolidBridgeElement<object>) => void,
-  textOnly = false,
-) {
+function disconnect(host: HTMLElement) {
+  host.remove();
+  return Promise.resolve();
+}
+
+function contextBridge(tag: string, textOnly = false) {
   const seen = vi.fn();
+  const connection = vi.fn();
+  const first = { basePath: "/first" } as ApplicationContext;
+  const second = { basePath: "/second" } as ApplicationContext;
+  const container = createApplicationContextProvider(first);
   const ContextBridge = defineSolidBridge(
     tag,
     () => {
@@ -97,9 +101,9 @@ function contextBridge(
       seen(application);
       return textOnly ? application.basePath : <output>{application.basePath}</output>;
     },
-    { properties: {}, connected: onConnect },
+    { properties: {}, connected: connection },
   );
-  return { seen, Bridge: ContextBridge };
+  return { seen, connection, first, second, container, ContextBridge };
 }
 
 it("runs Solid caller effects after the parent render completes", () => {
@@ -109,9 +113,7 @@ it("runs Solid caller effects after the parent render completes", () => {
       const [label, setLabel] = createSignal("");
       createEffect(
         () => props.label,
-        (value) => {
-          setLabel(value);
-        },
+        (value) => void setLabel(value),
       );
       return <output>{label()}</output>;
     },
@@ -144,8 +146,7 @@ it("mounts once and preserves setup reads with an application provider", async (
   const container = createApplicationContextProvider({} as ApplicationContext);
   container.append(host);
   document.body.append(container);
-  await host.updateComplete;
-  expect(host.querySelector("output")?.textContent).toBe("attribute:4:true");
+  await expectOutput(host, "attribute:4:true");
   expect(host.payload).toBe(payload);
   expect(host.hasAttribute("payload")).toBe(false);
   expect(mounted).toHaveBeenCalledTimes(1);
@@ -153,8 +154,7 @@ it("mounts once and preserves setup reads with an application provider", async (
   host.label = "property";
   host.removeAttribute("enabled");
   host.close();
-  await host.updateComplete;
-  expect(host.querySelector("output")?.textContent).toBe("property:4:false");
+  await expectOutput(host, "property:4:false");
   expect(host.querySelector("section")?.getAttribute("data-owned")).toBe("attribute");
   expect(mounted).toHaveBeenCalledTimes(1);
 });
@@ -260,13 +260,11 @@ it("keeps the same root across moves and releases/recreates it after a real disc
 });
 
 it("preserves caller content through updates and reconnects", async () => {
-  const container = document.createElement("div");
-  document.body.append(container);
   const host = new Bridge.Element();
   const input = document.createElement("input");
   input.value = "first";
   host.append(input);
-  await mountHost(host, container);
+  await mountHost(host);
   const outlet = input.parentElement!;
   input.value = "next";
   const second = document.createElement("input");
@@ -274,9 +272,8 @@ it("preserves caller content through updates and reconnects", async () => {
   expect(input.value).toBe("next");
   expect([...host.querySelectorAll("input")]).toEqual([input, second]);
 
-  host.remove();
-  await Promise.resolve();
-  await mountHost(host, container);
+  await disconnect(host);
+  await mountHost(host);
   expect([...host.querySelectorAll("input")]).toEqual([input, second]);
   input.value = "last";
   second.remove();
@@ -286,8 +283,6 @@ it("preserves caller content through updates and reconnects", async () => {
 
 it("keeps a tooltip's named caller slots live through DOM updates and reconnect", async () => {
   await import("../components/tooltip.ts");
-  const container = document.createElement("div");
-  document.body.append(container);
   const host = document.createElement("openclaw-tooltip");
   host.setAttribute("content", "Details");
   const trigger = document.createElement("button");
@@ -299,7 +294,7 @@ it("keeps a tooltip's named caller slots live through DOM updates and reconnect"
   };
   update("first");
   host.append(trigger, content);
-  await mountHost(host, container);
+  await mountHost(host);
   const assigned = () =>
     host.shadowRoot!.querySelector<HTMLSlotElement>('slot[name="content"]')!.assignedElements();
   expect(assigned()).toEqual([content]);
@@ -307,9 +302,8 @@ it("keeps a tooltip's named caller slots live through DOM updates and reconnect"
   await host.updateComplete;
   expect(host.querySelector("button")).toBe(trigger);
   expect([trigger.textContent, content.textContent]).toEqual(["next", "Rich next"]);
-  host.remove();
-  await Promise.resolve();
-  await mountHost(host, container);
+  await disconnect(host);
+  await mountHost(host);
   expect(host.querySelector("button")).toBe(trigger);
   expect(assigned()).toEqual([content]);
   update("last");
@@ -366,7 +360,7 @@ it("accepts property publication while a Solid owner adopts a mounted bridge", a
 
 it("honors the public setter when updating an attribute", async () => {
   const tag = `openclaw-solid-setter-${crypto.randomUUID()}`;
-  defineSolidBridge<{ label: string }>(
+  const SetterBridge = defineSolidBridge<{ label: string }>(
     tag,
     (props, host) => {
       const property = Object.getOwnPropertyDescriptor(host, "label")!;
@@ -381,10 +375,7 @@ it("honors the public setter when updating an attribute", async () => {
     },
     { properties: { label: { default: "initial" } } },
   );
-  const view = mountSolid(() => document.createElement(tag));
-  const host = view.container.querySelector(tag) as SolidBridgeElement<{ label: string }>;
-  await host.updateComplete;
-
+  const host = await mountHost(new SetterBridge.Element());
   host.setAttribute("label", "normalized");
   expect(host.label).toBe("NORMALIZED");
   await expectOutput(host, "NORMALIZED");
@@ -392,11 +383,9 @@ it("honors the public setter when updating an attribute", async () => {
 
 it("provides the Solid application context, rebinds replacements, and unsubscribes", async () => {
   const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-  const connection = vi.fn();
-  const { seen, Bridge: ContextBridge } = contextBridge("openclaw-solid-context-test", connection);
-  const first = { basePath: "/first" } as ApplicationContext;
-  const second = { basePath: "/second" } as ApplicationContext;
-  const container = createApplicationContextProvider(first);
+  const { seen, connection, first, second, container, ContextBridge } = contextBridge(
+    "openclaw-solid-context-test",
+  );
   document.body.append(container);
   const host = new ContextBridge.Element();
   render(() => {
@@ -417,8 +406,7 @@ it("provides the Solid application context, rebinds replacements, and unsubscrib
   await host.updateComplete;
   expect(host.textContent).toBe("/first");
   expect(connection).toHaveBeenCalledExactlyOnceWith(host);
-  host.remove();
-  await Promise.resolve();
+  await disconnect(host);
   seen.mockClear();
   container.setContext(first);
   await Promise.resolve();
@@ -434,14 +422,13 @@ it("provides the Solid application context, rebinds replacements, and unsubscrib
 });
 
 it("releases the old provider when a nearer provider takes over without moving the host", async () => {
-  const { seen, Bridge: ContextBridge } = contextBridge(
-    "openclaw-solid-provider-handoff-test",
-    undefined,
-    true,
-  );
-  const first = { basePath: "/first" } as ApplicationContext;
-  const second = { basePath: "/second" } as ApplicationContext;
-  const outer = createApplicationContextProvider(first);
+  const {
+    seen,
+    first,
+    second,
+    container: outer,
+    ContextBridge,
+  } = contextBridge("openclaw-solid-provider-handoff-test", true);
   const inner = document.createElement("div");
   outer.append(inner);
   document.body.append(outer);
@@ -453,8 +440,7 @@ it("releases the old provider when a nearer provider takes over without moving t
   await host.updateComplete;
   expect(seen).not.toHaveBeenCalled();
   expect(host.textContent).toBe("/first");
-  host.remove();
-  await Promise.resolve();
+  await disconnect(host);
   outer.setContext(first);
   innerProvider.unmount();
   await host.updateComplete;
@@ -483,8 +469,7 @@ it("publishes an imperatively mounted page's layout traits to the existing shell
     await host.updateComplete;
     expect(main.classList.contains("content--toolbar-header")).toBe(active);
   }
-  host.remove();
-  await Promise.resolve();
+  await disconnect(host);
   expect(main.classList.contains("content--toolbar-header")).toBe(false);
 });
 
@@ -494,8 +479,7 @@ it("releases a disconnected Solid root while the custom element itself is retain
   const weak = new WeakRef(mounted.mock.calls[0]![0]);
   const control = new WeakRef({ control: true });
   mounted.mockClear();
-  host.remove();
-  await Promise.resolve();
+  await disconnect(host);
   disposed.mockClear();
   await collectGarbageForTest();
   expect(control.deref()).toBeUndefined();

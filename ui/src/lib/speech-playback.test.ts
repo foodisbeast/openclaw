@@ -3,10 +3,7 @@
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.ts";
-import {
-  createGatewayRequestMock,
-  createTestGatewayClient,
-} from "../test-helpers/gateway-client.ts";
+import * as gateway from "../test-helpers/gateway-client.ts";
 import { GatewaySpeechPlayback, resolveSpeechTextLimit } from "./speech-playback.ts";
 
 let started = createDeferred();
@@ -44,32 +41,29 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function setup(request = createGatewayRequestMock(async () => speechResult)) {
-  const value = new GatewaySpeechPlayback();
-  players.push(value);
-  return { playback: value, request, client: createTestGatewayClient(request) };
+function setup(request = gateway.createGatewayRequestMock(async () => speechResult)) {
+  const playback = new GatewaySpeechPlayback();
+  players.push(playback);
+  return { playback, request, client: gateway.createTestGatewayClient(request) };
 }
 
 const speechResult = { audioBase64: "UklGRg==", mimeType: "audio/wav", provider: "openai" };
 
-it.each(["tts.speak", "talk.speak"] as const)(
-  "plays a long answer through sequential bounded %s requests",
-  async (method) => {
-    const { request, client, playback } = setup();
-    const speaking = playback.speak(client, "a".repeat(5000), method);
-    await started.promise;
-    expect(request).toHaveBeenCalledExactlyOnceWith(method, { text: "a".repeat(4096) });
-    const element = expectDefined(audio[0], "first speech element");
-    started = createDeferred();
-    element.dispatchEvent(new Event("ended"));
-    await started.promise;
-    expect(request).toHaveBeenLastCalledWith(method, { text: "a".repeat(904) });
-    expect(audio).toHaveLength(1);
-    element.dispatchEvent(new Event("ended"));
-    await speaking;
-    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
-  },
-);
+it.each(["tts.speak", "talk.speak"] as const)("chunks %s sequentially", async (method) => {
+  const { request, client, playback } = setup();
+  const speaking = playback.speak(client, "a".repeat(5000), method);
+  await started.promise;
+  expect(request).toHaveBeenCalledExactlyOnceWith(method, { text: "a".repeat(4096) });
+  const element = expectDefined(audio[0], "first speech element");
+  started = createDeferred();
+  element.dispatchEvent(new Event("ended"));
+  await started.promise;
+  expect(request).toHaveBeenLastCalledWith(method, { text: "a".repeat(904) });
+  expect(audio).toHaveLength(1);
+  element.dispatchEvent(new Event("ended"));
+  await speaking;
+  expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+});
 
 it("uses the configured speech bound and stops before another chunk is requested", async () => {
   const { request, client, playback } = setup();
@@ -85,7 +79,7 @@ it("uses the configured speech bound and stops before another chunk is requested
 
 it("releases a cancelled pending synthesis without playing its late result", async () => {
   const pending = createDeferred<typeof speechResult>();
-  const { client, playback } = setup(createGatewayRequestMock(() => pending.promise));
+  const { client, playback } = setup(gateway.createGatewayRequestMock(() => pending.promise));
   const speaking = playback.speak(client, "Pending speech");
   playback.stop();
   await speaking;
