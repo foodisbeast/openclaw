@@ -102,7 +102,7 @@ export async function drainFormattedSystemEvents(params: {
     (params.events ?? peekSystemEventEntries(queueKey)).filter(
       (event) => !isSystemEventTurnOwned(queueKey, event) && !isExecCompletionSystemEvent(event),
     ),
-    { deferredEventIds: params.deferredEventIds },
+    { deferredEventIds: params.deferredEventIds, adopted: true },
   );
   params.onEventsAdmitted?.(queued);
   const sessionStateNotices = queued.flatMap((event) => {

@@ -66,6 +66,17 @@ type SessionQueue = {
 
 const SYSTEM_EVENT_QUEUES_KEY = Symbol.for("openclaw.systemEvents.queues");
 
+const receiptSettlements = resolveGlobalSingleton(
+  Symbol.for("openclaw.systemEvents.receiptSettlements"),
+  () => new WeakMap<SystemEvent, (adopted: boolean) => void>(),
+);
+
+function settleSystemEventReceipt(event: SystemEvent, adopted: boolean): void {
+  const settle = receiptSettlements.get(event);
+  receiptSettlements.delete(event);
+  settle?.(adopted);
+}
+
 const turnOwners = resolveGlobalSingleton(
   Symbol.for("openclaw.systemEvents.turnOwners"),
   () => new WeakMap<SystemEvent, { cancel: () => void; started: boolean }>(),
@@ -82,6 +93,7 @@ const turnOwners = resolveGlobalSingleton(
 
 function retireSystemEvents(events: readonly SystemEvent[]): void {
   for (const event of events) {
+    settleSystemEventReceipt(event, false);
     const owner = turnOwners.get(event);
     if (owner && !owner.started) {
       owner.cancel();
@@ -346,7 +358,7 @@ export function claimSystemEventTurn(
         throw new Error("Session event occurrence was cancelled before admission");
       }
       owner.started = true;
-      consumeSelectedSystemEventEntries(key, events);
+      consumeSelectedSystemEventEntries(key, events, { adopted: true });
     },
     // A member can already be gone; settle every surviving claim without touching replacements.
     cancel: () => consumeSelectedSystemEventEntries(key, currentEvents()).length > 0,
@@ -370,7 +382,10 @@ export function isSystemEventTurnOwned(sessionKey: string, occurrence: SystemEve
 export function enqueueSystemEventWithReceipt(
   text: string,
   options: SystemEventOptions,
-  receiptOptions?: ReceiptOptions,
+  receiptOptions?: ReceiptOptions & {
+    /** Reports exact-occurrence adoption separately from cancellation or removal. */
+    onSettled?: (adopted: boolean) => void;
+  },
 ): (() => boolean) | null {
   const event = enqueueOwnedSystemEventEntry(text, options, {
     ...receiptOptions,
@@ -380,6 +395,9 @@ export function enqueueSystemEventWithReceipt(
     return null;
   }
   const sessionKey = requireSessionKey(options.sessionKey);
+  if (receiptOptions?.onSettled) {
+    receiptSettlements.set(event, receiptOptions.onSettled);
+  }
   return () => consumeSelectedSystemEventEntries(sessionKey, [event]).length > 0;
 }
 
@@ -436,7 +454,7 @@ function resetQueueState(key: string, entry: SessionQueue) {
 export function consumeSelectedSystemEventEntries(
   sessionKey: string,
   consumedEntries: readonly SystemEvent[],
-  options?: { deferredEventIds?: readonly string[] },
+  options?: { deferredEventIds?: readonly string[]; adopted?: boolean },
 ): SystemEvent[] {
   const key = requireSessionKey(sessionKey);
   const entry = getSessionQueue(key);
@@ -455,6 +473,9 @@ export function consumeSelectedSystemEventEntries(
     }
     const event = entry.queue[index];
     if (event) {
+      if (options?.adopted) {
+        settleSystemEventReceipt(event, true);
+      }
       if (!event.id || !deferredIds.has(event.id)) {
         entry.queue.splice(index, 1);
         retired.push(event);
