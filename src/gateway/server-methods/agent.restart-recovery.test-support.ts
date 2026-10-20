@@ -62,23 +62,20 @@ export function registerAgentQueuedRestartRecoveryTests() {
         expect(store[sessionKey]?.mainRestartRecovery?.reservation).toBeUndefined();
         expect(mocks.agentCommand).not.toHaveBeenCalled();
 
+        const cancelOptions = { context, client: null, isWebchatConnect: () => false };
         if (cause === "rpc") {
           cancellation = handleChatAbortRequest({
+            ...cancelOptions,
             params: { sessionKey, runId },
             respond: vi.fn(),
-            context,
             req: { type: "req", id: `${runId}-abort`, method: "chat.abort" },
-            client: null,
-            isWebchatConnect: () => false,
           });
         } else if (cause === "stop") {
           cancellation = handleDirectExternalChatSend({
+            ...cancelOptions,
             params: { sessionKey, message: "/stop", idempotencyKey: `${runId}-stop` },
             respond: stopRespond,
-            context,
             req: { type: "req", id: `${runId}-stop`, method: "chat.send" },
-            client: null,
-            isWebchatConnect: () => false,
           });
         } else if (cause === "timeout") {
           cancellation = vi.advanceTimersByTimeAsync(1_000);
@@ -94,10 +91,7 @@ export function registerAgentQueuedRestartRecoveryTests() {
         }
         void cancellation.catch(() => {});
         await waitForAssertion(() => {
-          expect(
-            stopRespond.mock.lastCall?.[0],
-            JSON.stringify(stopRespond.mock.lastCall),
-          ).not.toBe(false);
+          expect(stopRespond.mock.lastCall?.[0]).not.toBe(false);
           expect(active.input.abortSignal.aborted).toBe(true);
         });
         dispatchGate.resolve();

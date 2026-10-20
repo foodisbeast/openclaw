@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { transitionMainSessionRecovery } from "../../agents/main-session-recovery/main-session-recovery-state.js";
 import {
   mergeSessionEntry,
@@ -21,7 +21,8 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-function buildCreationPatch(opts: Partial<Parameters<typeof buildAgentSessionPatch>[0]>) {
+type PatchInput = Partial<Parameters<typeof buildAgentSessionPatch>[0]>;
+function buildCreationPatch(opts: PatchInput) {
   return buildAgentSessionPatch({
     freshEntry: opts.freshEntry,
     initialEntry: opts.freshEntry,
@@ -43,117 +44,104 @@ function buildCreationPatch(opts: Partial<Parameters<typeof buildAgentSessionPat
   });
 }
 
-async function buildPatch(
-  touchInteraction: boolean,
-  opts?: { requestLabel?: string; label?: string },
-) {
-  const entry: SessionEntry = {
+function buildPatch({ label, ...opts }: PatchInput & { label?: string }) {
+  const freshEntry: SessionEntry = {
     sessionId: "session",
     updatedAt: 1_000,
     lifecycleRunId: "completed-run",
     lastRunId: "completed-run",
     status: "failed",
     agentStatus: { note: "Need a password", attention: "key", expiresAt: 61_000 },
-    ...(opts?.label ? { label: opts.label } : {}),
+    ...(label ? { label } : {}),
   };
-  return (
-    await buildCreationPatch({
-      freshEntry: entry,
-      ...(opts?.requestLabel ? { requestLabel: opts.requestLabel } : {}),
-      canonicalSessionKey: "agent:main:main",
-      storePath: "/tmp/openclaw-agent-status-test.json",
-      isSystemGatewayRun: true,
-      touchInteraction,
-    })
-  ).patch;
+  return buildCreationPatch({
+    freshEntry,
+    canonicalSessionKey: "agent:main:main",
+    storePath: "/tmp/openclaw-agent-status-test.json",
+    isSystemGatewayRun: true,
+    ...opts,
+  }).then(({ patch }) => patch);
 }
 
-describe("agent session patch", () => {
-  it("clears agent status at the next human interaction boundary", async () => {
-    const patch = await buildPatch(true);
-    expect(Object.hasOwn(patch, "agentStatus")).toBe(true);
-    expect(patch.agentStatus).toBeUndefined();
-    expect(Object.hasOwn(patch, "lifecycleRunId")).toBe(true);
-    expect(patch.lifecycleRunId).toBeUndefined();
-    expect(patch.lastRunId).toBeUndefined();
+it("clears agent status at the next human interaction boundary", async () => {
+  const patch = await buildPatch({ touchInteraction: true });
+  expect(patch).toMatchObject({ agentStatus: undefined, lifecycleRunId: undefined });
+  expect(patch.lastRunId).toBeUndefined();
+});
+
+it("preserves a recovery reservation while reusing a session with a failed outcome", async () => {
+  const entry: SessionEntry = {
+    sessionId: "recovering-session",
+    updatedAt: 1_000,
+    status: "failed",
+    abortedLastRun: true,
+    restartRecoveryDeliveryRunId: "recovery-run",
+    mainRestartRecovery: {
+      cycleId: "recovery-cycle",
+      revision: 2,
+      chargedAttempts: 1,
+      reservation: { runId: "recovery-run", lifecycleGeneration: "generation-1", attempt: 1 },
+    },
+  };
+  const { patch } = await buildCreationPatch({ freshEntry: entry, isSystemGatewayRun: true });
+  const merged = mergeSessionEntry(entry, patch);
+
+  expect(
+    transitionMainSessionRecovery(merged, {
+      kind: "validate_recovery",
+      lifecycleGeneration: "generation-1",
+      runId: "recovery-run",
+      sessionId: entry.sessionId,
+    }),
+  ).toEqual({ kind: "recovery_validated" });
+  expect(merged).toMatchObject({
+    status: "failed",
+    abortedLastRun: true,
+    mainRestartRecovery: entry.mainRestartRecovery,
   });
+});
 
-  it("preserves a recovery reservation while reusing a session with a failed outcome", async () => {
-    const entry: SessionEntry = {
-      sessionId: "recovering-session",
-      updatedAt: 1_000,
-      status: "failed",
-      abortedLastRun: true,
-      restartRecoveryDeliveryRunId: "recovery-run",
-      mainRestartRecovery: {
-        cycleId: "recovery-cycle",
-        revision: 2,
-        chargedAttempts: 1,
-        reservation: { runId: "recovery-run", lifecycleGeneration: "generation-1", attempt: 1 },
-      },
-    };
-    const { patch } = await buildCreationPatch({ freshEntry: entry, isSystemGatewayRun: true });
-    const merged = mergeSessionEntry(entry, patch);
-
-    expect(
-      transitionMainSessionRecovery(merged, {
-        kind: "validate_recovery",
-        lifecycleGeneration: "generation-1",
-        runId: "recovery-run",
-        sessionId: entry.sessionId,
-      }),
-    ).toEqual({ kind: "recovery_validated" });
-    expect(merged).toMatchObject({
-      status: "failed",
-      abortedLastRun: true,
-      mainRestartRecovery: entry.mainRestartRecovery,
-    });
-  });
-
-  // Public agent RPC labels retain their run-start contract; native spawn labels are creation-owned.
-  it("persists the request label at run start", async () => {
-    expect((await buildPatch(false, { requestLabel: "Fix flaky auth test" })).label).toBe(
-      "Fix flaky auth test",
-    );
-  });
-
-  it("keeps the existing label when the request has none", async () => {
-    const patch = await buildPatch(false, { label: "Existing" });
-    expect(patch.label).toBe("Existing");
+it.each([
+  { label: undefined, requestLabel: "Fix flaky auth test", expected: "Fix flaky auth test" },
+  { label: "Existing", requestLabel: undefined, expected: "Existing" },
+])("preserves the run-start label $expected", async ({ label, requestLabel, expected }) => {
+  const patch = await buildPatch({ label, requestLabel });
+  expect(patch.label).toBe(expected);
+  if (label) {
     expect(Object.hasOwn(patch, "agentStatus")).toBe(false);
+  }
+});
+
+it("does not name an existing session", async () => {
+  const entry: SessionEntry = {
+    sessionId: "existing",
+    updatedAt: 1_000,
+    displayName: "Existing display name",
+  };
+  const result = await buildCreationPatch({
+    explicitSessionKey: "agent:main:incident-42",
+    freshEntry: entry,
   });
 
-  it("does not name an existing session", async () => {
-    const entry: SessionEntry = {
-      sessionId: "existing",
-      updatedAt: 1_000,
-      displayName: "Existing display name",
-    };
-    const result = await buildCreationPatch({
-      explicitSessionKey: "agent:main:incident-42",
-      freshEntry: entry,
-    });
+  expect(result.patch).not.toHaveProperty("displayName");
+  expect(mergeSessionEntry(entry, result.patch).displayName).toBe(entry.displayName);
+});
 
-    expect(result.patch).not.toHaveProperty("displayName");
-    expect(mergeSessionEntry(entry, result.patch).displayName).toBe(entry.displayName);
+it.each([
+  { name: "explicit key", key: "agent:main:incident-42", displayName: "incident-42" },
+  { name: "defaulted main", key: "agent:main:main", defaulted: true },
+  { name: "invisible run", key: "agent:main:internal:probe", invisible: true },
+  { name: "subagent", key: "agent:main:subagent:worker-1" },
+  { name: "ACP", key: "agent:main:acp:thread-1" },
+])("derives the display name for $name", async ({ key, displayName, defaulted, invisible }) => {
+  const { patch } = await buildCreationPatch({
+    canonicalSessionKey: displayName ? `${key} ` : key,
+    explicitSessionKey: defaulted ? undefined : key,
+    visibleRequest: !invisible,
   });
-
-  it.each([
-    { name: "explicit key", key: "agent:main:incident-42", displayName: "incident-42" },
-    { name: "defaulted main", key: "agent:main:main", defaulted: true },
-    { name: "invisible run", key: "agent:main:internal:probe", invisible: true },
-    { name: "subagent", key: "agent:main:subagent:worker-1" },
-    { name: "ACP", key: "agent:main:acp:thread-1" },
-  ])("derives the display name for $name", async ({ key, displayName, defaulted, invisible }) => {
-    const { patch } = await buildCreationPatch({
-      canonicalSessionKey: displayName ? `${key} ` : key,
-      explicitSessionKey: defaulted ? undefined : key,
-      visibleRequest: !invisible,
-    });
-    if (displayName) {
-      expect(patch.displayName).toBe(displayName);
-    } else {
-      expect(patch).not.toHaveProperty("displayName");
-    }
-  });
+  if (displayName) {
+    expect(patch.displayName).toBe(displayName);
+  } else {
+    expect(patch).not.toHaveProperty("displayName");
+  }
 });

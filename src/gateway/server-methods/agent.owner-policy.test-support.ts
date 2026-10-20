@@ -27,6 +27,11 @@ export function registerAgentOwnerPolicyCases(): void {
     ...fields,
   });
   const operator = origin({ operatorProfileId: "operator-alice" });
+  const principal = (kind: string, ref: string) => ({
+    state: "present",
+    kind,
+    rawPrincipalRef: ref,
+  });
   const row = (
     name: string,
     admin: boolean,
@@ -115,12 +120,8 @@ export function registerAgentOwnerPolicyCases(): void {
           })
         : operatorWriteCliClient(scopes);
       if (profile) {
-        client.authenticatedUserProfile = {
-          profileId: profile.id,
-          displayName: profile.displayName,
-          hasAvatar: false,
-          updatedAt: profile.updatedAt,
-        };
+        const { id: profileId, displayName, updatedAt } = profile;
+        client.authenticatedUserProfile = { profileId, displayName, hasAvatar: false, updatedAt };
       }
       await invokeAgent(
         {
@@ -151,16 +152,8 @@ export function registerAgentOwnerPolicyCases(): void {
       if (requesterOrigin) {
         expect(callArgs).toMatchObject({ requesterOrigin });
         expect(admissionFacts).toMatchObject({
-          invoker: { state: "present", kind: "agent", rawPrincipalRef: "main" },
-          ...(profile
-            ? {
-                representedSubject: {
-                  state: "present",
-                  kind: "person",
-                  rawPrincipalRef: profile.id,
-                },
-              }
-            : {}),
+          invoker: principal("agent", "main"),
+          ...(profile ? { representedSubject: principal("person", profile.id) } : {}),
         });
         if (!profile) {
           expect(admissionFacts?.representedSubject).toBeUndefined();
