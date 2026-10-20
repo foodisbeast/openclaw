@@ -16,7 +16,12 @@ import {
   copyRetainedTranscriptPayload,
   projectTranscriptRetainedDataSql,
 } from "../../config/sessions/session-transcript-retained-data.js";
-import { createTranscriptEventInserter } from "../../config/sessions/transcript-payload.js";
+import {
+  createTranscriptEventInserter,
+  transcriptEventModelBytesSql,
+  transcriptEventModelNavigationSql,
+  TRANSCRIPT_INSERT_BATCH_SIZE,
+} from "../../config/sessions/transcript-payload.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../kysely-sync.js";
 import { openNodeSqliteDatabase } from "../node-sqlite.js";
@@ -70,14 +75,26 @@ const fixtures = [
   { type: "custom", id: "retained", data: { opaque: "λ🦞", nested: [true, null] } },
   { type: "compaction", summary: "private summary", firstKeptEntryId: "kept" },
   { type: "branch_summary", summary: "private branch summary", fromId: "from" },
+  { type: "reset", firstKeptEntryId: "kept", reason: "reset" },
+  { type: "unknown", unknown: { content: "preserved" }, timestamp: null },
+  messageEvent({ role: null, content: null, providerReplay: null }),
+  messageEvent({ content: [{ type: "toolCall" }], providerReplay: {} }),
+  messageEvent({ role: "unknown", content: [null, 17, "text", { type: "unknown" }] }),
 ].map((event, index) => Object.assign({ id: `entry-${index}`, parentId: "old-parent" }, event));
+const exactJsonFixtures = [
+  '{"type":"reset","timestamp":1.00}',
+  '{"type":"reset","timestamp":1e-7}',
+  '{"type":"reset","reason":"\\uD83E\\uDD9E \\u03bb \\n \\\""}',
+  '{"type":"message","message":{"role":"user","content":"日本語 🦞","__openclaw":{"upstreamUserText":"private","runId":"kept"}}}',
+];
 const passthrough = ["{ malformed", "null", "true", "17", '"text"', "[]"];
 const schema = `CREATE TABLE transcript_events (
   session_id TEXT NOT NULL, seq INTEGER PRIMARY KEY, event_json TEXT, event_zstd BYTEA,
   event_utf8_bytes INTEGER, navigation_json TEXT, navigation_type TEXT, navigation_custom_type TEXT,
   navigation_display INTEGER, message_role TEXT, navigation_last_type TEXT,
   navigation_last_custom_type TEXT, navigation_valid INTEGER, created_at INTEGER
-)`;
+);
+CREATE TABLE transcript_event_identities (session_id TEXT, event_id TEXT)`;
 
 it.skipIf(typeof connection !== "string")(
   "keeps transcript projections and retained copies equal on SQLite and PostgreSQL",
@@ -101,14 +118,75 @@ it.skipIf(typeof connection !== "string")(
             admitSqliteSchema(db);
           }
           const insert = createTranscriptEventInserter(db, "conformance");
-          [...fixtures.map((event) => JSON.stringify(event)), ...passthrough].forEach(
-            (eventJson, seq) => insert({ seq, eventJson, createdAt: 1 }),
-          );
+          [
+            ...fixtures.map((event) => JSON.stringify(event)),
+            ...passthrough,
+            ...exactJsonFixtures,
+          ].forEach((eventJson, seq) => insert({ seq, eventJson, createdAt: 1 }));
         }
         const event =
           /* kysely-allow-raw: The fixture table owns this fixed JSON column. */ sql.ref<string>(
             "event_json",
           );
+        const exactRows = executeSqliteQuerySync(
+          postgres,
+          table(postgres)
+            .select([
+              "seq",
+              "navigation_json",
+              projectModelContextNavigationSql(postgres, event).as("legacy_navigation"),
+              sql<number>`octet_length(${projectModelContextEventSql(postgres, event, sql.lit(0))})`.as(
+                "legacy_bytes",
+              ),
+              sql<number>`octet_length(${projectModelContextEventSql(postgres, event, sql.lit(1))})`.as(
+                "legacy_retained_bytes",
+              ),
+              transcriptEventModelNavigationSql(postgres).as("stored_navigation"),
+              transcriptEventModelBytesSql(postgres, sql.lit(0)).as("stored_bytes"),
+              transcriptEventModelBytesSql(postgres, sql.lit(1)).as("stored_retained_bytes"),
+            ])
+            .where((eb) =>
+              eb.or([
+                eb("seq", "<", fixtures.length),
+                eb("seq", ">=", fixtures.length + passthrough.length),
+              ]),
+            )
+            .orderBy("seq"),
+        ).rows;
+        expect(exactRows).toHaveLength(fixtures.length + exactJsonFixtures.length);
+        for (const row of exactRows) {
+          expect(row.navigation_json, `stored envelope at ${row.seq}`).not.toBeNull();
+          expect(row.stored_navigation).toBe(row.legacy_navigation);
+          expect(row.stored_bytes).toBe(row.legacy_bytes);
+          expect(row.stored_retained_bytes).toBe(row.legacy_retained_bytes);
+        }
+        // A stored-navigation read must not parse the canonical payload at all.
+        remote
+          .prepare("UPDATE transcript_events SET event_json = ? WHERE seq = 0")
+          .run("{ unavailable");
+        try {
+          const stored = executeSqliteQuerySync(
+            postgres,
+            table(postgres)
+              .select([
+                transcriptEventModelNavigationSql(postgres).as("navigation"),
+                transcriptEventModelBytesSql(postgres, sql.lit(0)).as("bytes"),
+                transcriptEventModelBytesSql(postgres, sql.lit(1)).as("retained_bytes"),
+              ])
+              .where("seq", "=", 0),
+          ).rows;
+          expect(stored).toEqual([
+            {
+              navigation: exactRows[0]!.legacy_navigation,
+              bytes: exactRows[0]!.legacy_bytes,
+              retained_bytes: exactRows[0]!.legacy_retained_bytes,
+            },
+          ]);
+        } finally {
+          remote
+            .prepare("UPDATE transcript_events SET event_json = ? WHERE seq = 0")
+            .run(JSON.stringify(fixtures[0]));
+        }
         for (const omit of [0, 1]) {
           for (const notice of [false, true]) {
             const projections = databases.map((db) =>
@@ -150,6 +228,7 @@ it.skipIf(typeof connection !== "string")(
             table(db)
               .select(projectResetBoundaryNavigationSql(db, event).as("reset"))
               .where("seq", ">=", fixtures.length)
+              .where("seq", "<", fixtures.length + passthrough.length)
               .orderBy("seq"),
           ).rows;
           expect(rows.map((row) => row.reset)).toEqual(passthrough);
@@ -187,6 +266,42 @@ it.skipIf(typeof connection !== "string")(
           expect(copies[1]).toEqual(copies[0]);
           expect(copies[1]).toEqual({ ...fixtures[source], parentId });
         }
+        const insert = createTranscriptEventInserter(postgres, "conformance");
+        insert.batch(
+          Array.from({ length: TRANSCRIPT_INSERT_BATCH_SIZE }, (_, index) => ({
+            seq: 2000 + index,
+            eventJson: '{"type":"reset"}',
+            createdAt: 1,
+          })),
+        );
+        expect(
+          remote
+            .prepare(
+              "SELECT count(*) AS count FROM transcript_events WHERE seq >= 2000 AND navigation_json IS NOT NULL",
+            )
+            .get()?.count,
+        ).toBe(TRANSCRIPT_INSERT_BATCH_SIZE);
+        expect(
+          insert({
+            seq: 3000,
+            eventJson: '{"type":"reset"}',
+            eventId: "identity-insert",
+            createdAt: 1,
+          }),
+        ).toBe(true);
+        const identity = executeSqliteQuerySync(
+          postgres,
+          table(postgres)
+            .select([
+              transcriptEventModelNavigationSql(postgres).as("navigation"),
+              transcriptEventModelBytesSql(postgres, sql.lit(0)).as("bytes"),
+              transcriptEventModelBytesSql(postgres, sql.lit(1)).as("retained_bytes"),
+            ])
+            .where("seq", "=", 3000),
+        ).rows;
+        expect(identity).toEqual([
+          { navigation: '{"type": "reset"}', bytes: 17, retained_bytes: 17 },
+        ]);
       } finally {
         try {
           remote.exec(`DROP SCHEMA "${namespace}" CASCADE`);

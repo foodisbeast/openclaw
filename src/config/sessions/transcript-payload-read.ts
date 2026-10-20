@@ -5,6 +5,7 @@ import { isPostgresSqlConnection, type EngineConnection } from "../../infra/sql-
 import { resolveZstdCodec } from "../../infra/zstd-codec.js";
 
 export const MAX_COMPRESSED_EVENT_BYTES = 4 * 1024 * 1024;
+export const MAX_NAVIGATION_BYTES = 16 * 1024;
 export type TranscriptPayloadAlias = "transcript_events" | "event" | "te" | "parent";
 const DECODE_FUNCTION = "openclaw_transcript_payload_decode";
 const registeredDecoders = new WeakSet<DatabaseSync>();

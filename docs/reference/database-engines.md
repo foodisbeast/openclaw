@@ -610,6 +610,11 @@ and recovery must account for that durability policy. The adapter sets generous
 lock and statement timeouts once during connection setup; operations do not
 change timeout settings individually.
 
+New PostgreSQL transcript inserts record model-context navigation and its exact
+JSONB byte costs in the same statement as the canonical event. Context reads reuse
+those recorded values. Older rows and exceptional payloads without a navigation
+envelope retain the native SQL projection fallback; no backfill is required.
+
 ## Anchors and backups
 
 A PostgreSQL store keeps a small SQLite anchor at its usual local database path.

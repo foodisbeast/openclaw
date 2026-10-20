@@ -59,6 +59,15 @@ export function projectModelContextEventSql(
     THEN ${jsonRemovePaths(db, boundedEvent, [sql.lit("$.message.providerReplay")])} ELSE ${boundedEvent} END`;
 }
 
+/** Keep persisted navigation costs identical to the legacy read-time projection. */
+export function projectModelContextBytesSql(
+  db: EngineConnection,
+  event: Expression<string | Uint8Array>,
+  omitCheckpoint: Expression<number>,
+): RawBuilder<number> {
+  return sql<number>`octet_length(${projectModelContextEventSql(db, event, omitCheckpoint)})`;
+}
+
 function contentPropertySql(
   event: Expression<string | Uint8Array>,
   property: "type" | "id" | "name" | "text",
@@ -126,7 +135,9 @@ export function projectTranscriptNavigationSql(
 export function projectResetBoundaryNavigationSql(
   db: EngineConnection,
   event: Expression<string>,
+  valid: Expression<unknown> = jsonValid(db, event),
 ): RawBuilder<string> {
+  const identity = isPostgresSqlConnection(db) ? sql<string>`${event}::text` : event;
   const entry = jsonPickObject(db, event, [
     ...TRANSCRIPT_NAVIGATION_KEYS,
     "timestamp",
@@ -135,7 +146,7 @@ export function projectResetBoundaryNavigationSql(
     "display",
   ]);
   // Malformed rows must reach JSON.parse unchanged; CASE guards the native projection.
-  return /* kysely-allow-raw: reset planning uses navigation metadata, never durable transcript payloads. */ sql<string>`CASE WHEN ${jsonValid(db, event)} THEN
+  return /* kysely-allow-raw: reset planning uses navigation metadata, never durable transcript payloads. */ sql<string>`CASE WHEN ${valid} THEN
     CASE WHEN ${jsonType(db, event)} = 'object' THEN
       ${jsonSetPath(
         db,
@@ -146,8 +157,8 @@ export function projectResetBoundaryNavigationSql(
         }),
         true,
       )}
-    ELSE ${event} END
-    ELSE ${event} END`;
+    ELSE ${identity} END
+    ELSE ${identity} END`;
 }
 
 function systemUpdateKindSql(

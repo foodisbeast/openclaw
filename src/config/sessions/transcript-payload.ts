@@ -17,6 +17,7 @@ import { resolveZstdCodec } from "../../infra/zstd-codec.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import { findSessionTranscriptHeader } from "./session-entry-codec.js";
 import {
+  projectModelContextBytesSql,
   projectModelContextEventSql,
   projectModelContextNavigationSql,
   projectResetBoundaryNavigationSql,
@@ -25,8 +26,10 @@ import {
 import { projectSessionTranscriptReportFacts } from "./session-transcript-report-facts.js";
 import {
   MAX_COMPRESSED_EVENT_BYTES,
+  MAX_NAVIGATION_BYTES,
   type TranscriptPayloadAlias,
 } from "./transcript-payload-read.js";
+import { projectPostgresTranscriptPayloadSql } from "./transcript-payload.postgres.js";
 import {
   deriveTranscriptPredicateFields,
   type TranscriptPredicateFields,
@@ -39,7 +42,6 @@ export {
   type TranscriptPayloadAlias,
 } from "./transcript-payload-read.js";
 
-const MAX_NAVIGATION_BYTES = 16 * 1024;
 const MIN_COMPRESS_BYTES = 1024;
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
@@ -65,7 +67,7 @@ export type TranscriptEventInsertRow = {
   preparedPayload?: PreparedTranscriptPayload;
 };
 
-// Fourteen bound columns per row use at most 7,168 parameters on either engine.
+// PostgreSQL binds the envelope's constants once for the batch, within its parameter limit.
 export const TRANSCRIPT_INSERT_BATCH_SIZE = 512;
 
 /** Physical payload writes participate in the transcript owner's admitted transaction. */
@@ -80,7 +82,15 @@ export function createTranscriptEventInserter(database: EngineConnection, sessio
       (!isPostgresSqlConnection(database) || prepared.payload.event_zstd === null)
         ? prepared.payload
         : prepareTranscriptPayload(database, row.eventJson, row.parsedEvent);
-    return { session_id: sessionId, seq: row.seq, ...payload, created_at: row.createdAt };
+    return {
+      session_id: sessionId,
+      seq: row.seq,
+      ...payload,
+      created_at: row.createdAt,
+      report_json: isPostgresSqlConnection(database)
+        ? prepareTranscriptReportJson(row.eventJson, row.parsedEvent)
+        : null,
+    };
   };
   type StoredRow = ReturnType<typeof prepareRow>;
   const columns = [
@@ -101,8 +111,54 @@ export function createTranscriptEventInserter(database: EngineConnection, sessio
   ] as const;
   // Each executor is used only with the chunk length that defines its bound indexes.
   const createBatchInsert = (count: number) =>
-    prepareSqliteQuerySync<readonly StoredRow[]>(database, (parameter) =>
-      kysely.insertInto("transcript_events").values(
+    prepareSqliteQuerySync<readonly StoredRow[]>(database, (parameter) => {
+      if (isPostgresSqlConnection(database)) {
+        const inputColumns = [...columns, "report_json"] as const;
+        const input = sql<StoredRow>`(SELECT * FROM (VALUES ${sql.join(
+          Array.from(
+            { length: count },
+            (_, index) =>
+              sql`(${sql.join(
+                inputColumns.map((column) => {
+                  const value = parameter((rows) => rows[index]![column]);
+                  // VALUES has no target-column context for null/text and integer parameters.
+                  switch (column) {
+                    case "seq":
+                    case "event_utf8_bytes":
+                    case "navigation_display":
+                    case "navigation_valid":
+                    case "created_at":
+                      return sql`${value}::bigint`;
+                    case "event_zstd":
+                      return sql`${value}::bytea`;
+                    default:
+                      return sql`${value}::text`;
+                  }
+                }),
+              )})`,
+          ),
+        )}) AS input (${sql.join(inputColumns.map((column) => sql.ref(column)))}))`;
+        return kysely
+          .with("payload_rows", () => input)
+          .insertInto("transcript_events")
+          .columns(columns)
+          .expression((db) =>
+            db
+              .selectFrom("payload_rows")
+              .select((eb) =>
+                columns.map((column) =>
+                  column === "navigation_json"
+                    ? projectPostgresTranscriptPayloadSql(
+                        database,
+                        eb.ref("event_json"),
+                        eb.ref("report_json"),
+                      ).as(column)
+                    : eb.ref(column).as(column),
+                ),
+              ),
+          );
+      }
+      return kysely.insertInto("transcript_events").values(
         Array.from({ length: count }, (_, index) => ({
           session_id: sessionId,
           seq: parameter((rows) => rows[index]!.seq),
@@ -121,8 +177,8 @@ export function createTranscriptEventInserter(database: EngineConnection, sessio
           navigation_valid: parameter((rows) => rows[index]!.navigation_valid),
           created_at: parameter((rows) => rows[index]!.created_at),
         })),
-      ),
-    );
+      );
+    });
   const batchInserts = new Map<number, ReturnType<typeof createBatchInsert>>();
   const batch = (rows: readonly TranscriptEventInsertRow[]) => {
     for (let offset = 0; offset < rows.length; offset += TRANSCRIPT_INSERT_BATCH_SIZE) {
@@ -144,7 +200,17 @@ export function createTranscriptEventInserter(database: EngineConnection, sessio
           .columns(columns)
           .expression(
             kysely
-              .selectNoFrom(columns.map((column) => parameter((row) => row[column]).as(column)))
+              .selectNoFrom(
+                columns.map((column) =>
+                  column === "navigation_json" && isPostgresSqlConnection(database)
+                    ? projectPostgresTranscriptPayloadSql(
+                        database,
+                        parameter((row) => row.event_json),
+                        parameter((row) => row.report_json),
+                      ).as(column)
+                    : parameter((row) => row[column]).as(column),
+                ),
+              )
               .where((eb) =>
                 eb.not(
                   eb.exists(
@@ -175,6 +241,18 @@ export function createTranscriptEventInserter(database: EngineConnection, sessio
     },
     { batch },
   );
+}
+
+function prepareTranscriptReportJson(eventJson: string, parsedEvent?: unknown): string | null {
+  try {
+    return JSON.stringify(
+      projectSessionTranscriptReportFacts(
+        parsedEvent === undefined ? JSON.parse(eventJson) : parsedEvent,
+      ),
+    );
+  } catch {
+    return null;
+  }
 }
 
 export function createTranscriptPayloadUpdater(database: EngineConnection, sessionId: string) {
@@ -526,7 +604,7 @@ export function transcriptEventModelBytesSql(
       `${alias}.event_json`,
     );
   return /* kysely-allow-raw: native fallback preserves UTF-16 byte units; metadata excludes the JSONL separator. */ sql<number>`CASE WHEN ${metadata} IS NULL
-    THEN octet_length(${projectModelContextEventSql(database, identity, omitCheckpoint)})
+    THEN ${projectModelContextBytesSql(database, identity, omitCheckpoint)}
     ELSE ${jsonPathValue(
       database,
       metadata,
