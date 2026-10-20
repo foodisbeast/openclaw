@@ -1,7 +1,7 @@
 import { createServer, ServerResponse } from "node:http";
 import { setImmediate } from "node:timers/promises";
 import { crc32 } from "node:zlib";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, assert, expect, it, vi } from "vitest";
 import { createNoisyPngBuffer, createSolidPngBuffer } from "../../test/helpers/image-fixtures.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
@@ -22,6 +22,7 @@ import {
 } from "./artifact-download-projection.js";
 import { handleArtifactDownloadHttpRequest } from "./artifact-downloads.js";
 import { createGatewayRequest as createRequest } from "./hooks-test-helpers.js";
+import { resolveByteResponse } from "./http-byte-range.js";
 import { ANIMATED_GIF_BYTES, APNG_BYTES } from "./http-image.test-support.js";
 import type { ArtifactRecord } from "./server-methods/artifacts-content.js";
 import type { GatewayClient } from "./server-methods/client-types.js";
@@ -43,15 +44,6 @@ async function expectWebp(bytes: Uint8Array, width: number, height: number) {
     width,
     height,
   });
-}
-
-function createResponse() {
-  const res = new ServerResponse(createRequest({ path: "/" }));
-  return {
-    res,
-    setHeader: vi.spyOn(res, "setHeader"),
-    end: vi.spyOn(res, "end").mockReturnValue(res),
-  };
 }
 
 function createClient(signal = new AbortController().signal): GatewayClient {
@@ -96,17 +88,20 @@ function grantFor(
   });
 }
 
-function handle(
+function requestDownload(
   client: GatewayClient,
   path: string,
-  res: ServerResponse,
   method = "GET",
   headers?: Record<string, string>,
 ) {
-  return handleArtifactDownloadHttpRequest(createRequest({ path, method, headers }), res, {
+  const req = createRequest({ path, method, headers });
+  const res = new ServerResponse(req);
+  const end = vi.spyOn(res, "end").mockReturnValue(res);
+  const pending = handleArtifactDownloadHttpRequest(req, res, {
     clients: new Set([client]),
     basePath: "",
   });
+  return { res, end, pending };
 }
 
 function listen(client: GatewayClient, before?: (res: ServerResponse) => void) {
@@ -170,8 +165,7 @@ it.each(["source", "connection", "expiry"] as const)(
       },
     };
     const grant = createArtifactDownload(grantOptions);
-    const response = createResponse();
-    const pending = handle(client, grant.url, response.res);
+    const response = requestDownload(client, grant.url);
     try {
       await entered.promise;
       expect(response.end).not.toHaveBeenCalled();
@@ -184,12 +178,12 @@ it.each(["source", "connection", "expiry"] as const)(
         clock.mockReturnValue(Date.parse(grant.expiresAt));
       }
       release.resolve();
-      expect(await pending).toBe(true);
+      expect(await response.pending).toBe(true);
       expect(response.res.statusCode).toBe(404);
       expect(response.end).toHaveBeenCalledExactlyOnceWith("Not Found");
     } finally {
       release.resolve();
-      await pending;
+      await response.pending;
     }
   },
 );
@@ -215,10 +209,8 @@ it.each([
     const client = createClient();
     const grant = grantFor(client, artifact);
     const fetch = async (query: string, method = "GET", headers?: Record<string, string>) => {
-      const response = createResponse();
-      expect(await handle(client, `${grant.url}${query}`, response.res, method, headers)).toBe(
-        true,
-      );
+      const response = requestDownload(client, `${grant.url}${query}`, method, headers);
+      expect(await response.pending).toBe(true);
       return response;
     };
     for (const query of ["", "?variant=unknown"]) {
@@ -232,25 +224,17 @@ it.each([
       return;
     }
     const bytes = thumbnail.end.mock.calls[0]?.[0];
-    expect(bytes).toBeInstanceOf(Uint8Array);
-    if (!(bytes instanceof Uint8Array)) {
-      throw new Error("Expected image response bytes");
-    }
+    assert.instanceOf(bytes, Uint8Array);
     expect(thumbnail.res.statusCode).toBe(200);
-    for (const [name, value] of Object.entries({
+    expect(thumbnail.res.getHeaders()).toMatchObject({
       "content-type": kind === "file" ? "text/plain" : "image/webp",
       "content-security-policy": "default-src 'none'; sandbox",
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
       "cache-control": "private, no-store",
-      "Content-Length": String(bytes.byteLength),
-    })) {
-      expect(thumbnail.setHeader).toHaveBeenCalledWith(name, value);
-    }
-    expect(thumbnail.setHeader).toHaveBeenCalledWith(
-      "content-disposition",
-      expect.stringMatching(/^attachment;/),
-    );
+      "content-length": String(bytes.byteLength),
+      "content-disposition": expect.stringMatching(/^attachment;/),
+    });
     if (dimensions.length) {
       await expectWebp(bytes, dimensions[0]!, dimensions[1]!);
     }
@@ -265,7 +249,7 @@ it.each([
     }
     const head = await fetch("?variant=thumbnail", "HEAD");
     expect(head.end).toHaveBeenCalledExactlyOnceWith(undefined);
-    expect(head.setHeader).toHaveBeenCalledWith("Content-Length", String(bytes.byteLength));
+    expect(head.res.getHeader("Content-Length")).toBe(String(bytes.byteLength));
     const range = await fetch("?variant=thumbnail", "GET", { range: "bytes=0-7" });
     expect(range.res.statusCode).toBe(206);
     expect(range.end).toHaveBeenCalledExactlyOnceWith(bytes.subarray(0, 8));
@@ -292,8 +276,8 @@ it.each(["missing", "stream", "body-and-stream"] as const)(
         };
       },
     });
-    const response = createResponse();
-    await handle(client, grant.url + "?variant=thumbnail", response.res);
+    const response = requestDownload(client, grant.url + "?variant=thumbnail");
+    await response.pending;
     expect(response.res.statusCode).toBe(404);
     expect(response.end).toHaveBeenCalledExactlyOnceWith("Not Found");
     expect(stream).not.toHaveBeenCalled();
@@ -398,14 +382,13 @@ it("releases retained sharing facts on unused expiry, eviction, and disconnect",
         const controller = new AbortController();
         const client = createClient(controller.signal);
         const facts = await prepareSessionMutationFacts({ cfg, sessionKey, agentId: "main" });
+        const current = () => facts.readCurrent(cfg);
         const release = vi.fn(facts.release);
         const read = vi.fn(async () => undefined);
         try {
           const authority = {
             client,
-            assertCurrent: () => {
-              facts.readCurrent(cfg);
-            },
+            assertCurrent: () => void current(),
             release,
           };
           const grant =
@@ -415,7 +398,7 @@ it("releases retained sharing facts on unused expiry, eviction, and disconnect",
                   ...authority,
                   path: "/api/chat/media/outgoing/session/attachment/full",
                 });
-          expect(facts.readCurrent(cfg).target.entry.sessionId).toBe("grant-lifetime");
+          expect(current().target.entry.sessionId).toBe("grant-lifetime");
           if (reason === "expiry") {
             pruneExpiredArtifactDownloads(Date.parse(grant.expiresAt), [client]);
           } else if (reason === "eviction") {
@@ -428,14 +411,12 @@ it("releases retained sharing facts on unused expiry, eviction, and disconnect",
             controller.abort();
             if (kind === "managed") {
               expect(release).not.toHaveBeenCalled();
-              expect(facts.readCurrent(cfg).target.entry.sessionId).toBe("grant-lifetime");
+              expect(current().target.entry.sessionId).toBe("grant-lifetime");
               pruneExpiredArtifactDownloads(Date.parse(grant.expiresAt));
             }
           }
           expect(release, reason).toHaveBeenCalledOnce();
-          expect(() => facts.readCurrent(cfg), reason).toThrow(
-            SessionMutationFactsUnavailableError,
-          );
+          expect(current, reason).toThrow(SessionMutationFactsUnavailableError);
           expect(read).not.toHaveBeenCalled();
           controller.abort();
           pruneExpiredArtifactDownloads(Number.MAX_SAFE_INTEGER, [client]);
@@ -474,13 +455,7 @@ it("backpressures HTTP streams across URL expiry and closes their source on brow
     release,
     read: async () => ({
       artifact,
-      response: {
-        kind: "full",
-        statusCode: 200,
-        contentLength: size,
-        etag: undefined,
-        lastModified: undefined,
-      },
+      response: resolveByteResponse({ file: { size } }),
       async *stream(signal) {
         try {
           while (reads * chunkBytes < size) {

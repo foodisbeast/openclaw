@@ -40,10 +40,8 @@ export async function observeGatewayRunExecution(selection?: { method: "agent"; 
     const observed = observedRequest.getStore();
     if (observed) {
       observed.effects.add(pending);
-      void pending.then(
-        () => observed.effects.delete(pending),
-        () => observed.effects.delete(pending),
-      );
+      const settled = () => observed.effects.delete(pending);
+      void pending.then(settled, settled);
     }
     return pending;
   };
@@ -70,112 +68,101 @@ export async function observeGatewayRunExecution(selection?: { method: "agent"; 
           }),
       };
     });
-  const sessionWorkSpy = vi
-    .spyOn(sessionWork, "beginSessionEffect")
-    .mockImplementation((params) => {
+  const createChatLifecycle = chatModule?.createChatSendDispatchErrorLifecycle;
+  const spies = {
+    session: vi.spyOn(sessionWork, "beginSessionEffect").mockImplementation((params) => {
       const pending = beginSessionWork(params);
       if (observedRequest.getStore()) {
         // Queued custody can finish outside the request frame after dispatch settles.
         void captureEffect(pending.then((lease) => lease.released));
       }
       return pending;
-    });
-  // Observe persistence and retained work without changing their admission or promises.
-  const asyncWorkSpy = vi
-    .spyOn(asyncWork, "trackAsyncWork")
-    .mockImplementation((run) => captureEffect(trackWork(run)));
-  const effectSpy = vi
-    .spyOn(admission, "runWithRetainedGatewayRootWork")
-    .mockImplementation((run) => captureEffect(retainWork(run)));
-  const continuationSpy = vi
-    .spyOn(admission, "runWithGatewayIndependentRootWorkContinuation")
-    .mockImplementation((run, origin) => captureEffect(continueWork(run, origin)));
-  const requestSpy = vi
-    .spyOn(requestModule, "handleGatewayRequest")
-    .mockImplementation((options, diagnostics) => {
-      const params = isRecord(options.req.params) ? options.req.params : undefined;
-      const runId = params?.idempotencyKey ?? params?.runId;
-      const selected = selection
-        ? options.req.method === selection.method && params?.idempotencyKey === selection.runId
-        : true;
-      if (!selected) {
-        return handleRequest(options, diagnostics);
-      }
-      const observed: ObservedRequest = {
-        runId: typeof runId === "string" ? runId : undefined,
-        executions: [],
-        effects: new Set(),
-      };
-      requests.push(observed);
-      observed.request = observedRequest.run(observed, () => handleRequest(options, diagnostics));
-      return observed.request;
-    });
-  const executionSpy = vi
-    .spyOn(executionModule, "startAgentRunExecution")
-    .mockImplementation((params) => {
+    }),
+    // Observe persistence and retained work without changing their admission or promises.
+    asyncWork: vi
+      .spyOn(asyncWork, "trackAsyncWork")
+      .mockImplementation((run) => captureEffect(trackWork(run))),
+    effect: vi
+      .spyOn(admission, "runWithRetainedGatewayRootWork")
+      .mockImplementation((run) => captureEffect(retainWork(run))),
+    continuation: vi
+      .spyOn(admission, "runWithGatewayIndependentRootWorkContinuation")
+      .mockImplementation((run, origin) => captureEffect(continueWork(run, origin))),
+    request: vi
+      .spyOn(requestModule, "handleGatewayRequest")
+      .mockImplementation((options, diagnostics) => {
+        const params = isRecord(options.req.params) ? options.req.params : undefined;
+        const runId = params?.idempotencyKey ?? params?.runId;
+        const selected = selection
+          ? options.req.method === selection.method && params?.idempotencyKey === selection.runId
+          : true;
+        if (!selected) {
+          return handleRequest(options, diagnostics);
+        }
+        const observed: ObservedRequest = {
+          runId: typeof runId === "string" ? runId : undefined,
+          executions: [],
+          effects: new Set(),
+        };
+        requests.push(observed);
+        observed.request = observedRequest.run(observed, () => handleRequest(options, diagnostics));
+        return observed.request;
+      }),
+    execution: vi.spyOn(executionModule, "startAgentRunExecution").mockImplementation((params) => {
       const pending = execute(params);
       observedRequest.getStore()?.executions.push(pending);
       return pending;
-    });
-  const createChatLifecycle = chatModule?.createChatSendDispatchErrorLifecycle;
-  const chatSpy =
-    chatModule && createChatLifecycle
-      ? vi
-          .spyOn(chatModule, "createChatSendDispatchErrorLifecycle")
-          .mockImplementation((params) => {
-            const lifecycle = createChatLifecycle(params);
-            const observed = observedRequest.getStore();
-            if (!observed) {
-              return lifecycle;
-            }
-            const completed = createDeferred();
-            observed.executions.push(completed.promise);
-            void completed.promise.catch(() => undefined);
-            return {
-              ...lifecycle,
-              finalize() {
-                const pending = lifecycle.finalize();
-                // Adopt the original promise without replacing the caller's continuation.
-                completed.resolve(pending);
-                return pending;
-              },
-            };
-          })
-      : undefined;
-  const settleDispatch = async (observed: ObservedRequest) => {
-    // RPC responses and final events assert outcomes; cleanup observes settlement.
-    await Promise.allSettled([observed.request]);
-    // Request admission can register detached execution after cleanup starts.
-    await Promise.allSettled(observed.executions);
+    }),
+    chat:
+      chatModule && createChatLifecycle
+        ? vi
+            .spyOn(chatModule, "createChatSendDispatchErrorLifecycle")
+            .mockImplementation((params) => {
+              const lifecycle = createChatLifecycle(params);
+              const observed = observedRequest.getStore();
+              if (!observed) {
+                return lifecycle;
+              }
+              const completed = createDeferred();
+              observed.executions.push(completed.promise);
+              void completed.promise.catch(() => undefined);
+              return {
+                ...lifecycle,
+                finalize() {
+                  const pending = lifecycle.finalize();
+                  // Adopt the original promise without replacing the caller's continuation.
+                  completed.resolve(pending);
+                  return pending;
+                },
+              };
+            })
+        : undefined,
   };
-  const settleRequest = async (observed: ObservedRequest) => {
-    await settleDispatch(observed);
-    while (observed.effects.size > 0) {
-      await Promise.allSettled(observed.effects);
-    }
-  };
-  const settleSelected = async (runId?: string, settle = settleRequest) => {
+  const settleSelected = async (runId?: string, includeEffects = true) => {
     for (const observed of requests) {
       if (runId === undefined || observed.runId === runId) {
-        await settle(observed);
+        // Admission can register detached execution while the request settles.
+        await Promise.allSettled([observed.request]);
+        await Promise.allSettled(observed.executions);
+        if (includeEffects) {
+          while (observed.effects.size > 0) {
+            await Promise.allSettled(observed.effects);
+          }
+        }
       }
     }
   };
   return {
     // Queued custody intentionally retains effects until a later execution settles.
-    waitForDispatch: (runId: string) => settleSelected(runId, settleDispatch),
+    waitForDispatch: (runId: string) => settleSelected(runId, false),
     waitForCompletion: (runId?: string) => settleSelected(runId),
     async restore() {
       try {
         await settleSelected();
       } finally {
-        chatSpy?.mockRestore();
-        sessionWorkSpy.mockRestore();
-        asyncWorkSpy.mockRestore();
-        executionSpy.mockRestore();
-        requestSpy.mockRestore();
-        effectSpy.mockRestore();
-        continuationSpy.mockRestore();
+        for (const spy of Object.values(spies)) {
+          spy?.mockRestore();
+        }
         if (previousRootWork) {
           rootWorkSpy.mockImplementation(previousRootWork);
         } else {
