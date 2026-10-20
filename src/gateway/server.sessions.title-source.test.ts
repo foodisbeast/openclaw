@@ -71,6 +71,10 @@ Handle the supplied task.
         expect(result.ok, JSON.stringify(result.error)).toBe(true);
         return result.payload;
       }
+      const create = (key: string, fields: Record<string, unknown> = {}) =>
+        request("sessions.create", { agentId: "main", key, ...fields });
+      const send = (sessionKey: string, message: string, idempotencyKey: string) =>
+        request("chat.send", { sessionKey, message, idempotencyKey });
       dispatchInboundMessageMock.mockResolvedValue({
         queuedFinal: false,
         counts: { block: 0, final: 0, tool: 0 },
@@ -80,7 +84,7 @@ Handle the supplied task.
       expect(prepared).toMatchObject({ title: "Repair request routing" });
 
       const createdKey = "agent:main:dashboard:created-title-source";
-      await request("sessions.create", { agentId: "main", key: createdKey, titleSource: task });
+      await create(createdKey, { titleSource: task });
       await waitForTitle(createdKey);
       expect(context.broadcastToConnIds).toHaveBeenCalledWith(
         "sessions.changed",
@@ -90,34 +94,21 @@ Handle the supplied task.
       );
 
       const sentKey = "agent:main:dashboard:sent-title-source";
-      await request("sessions.create", { agentId: "main", key: sentKey });
-      await request("chat.send", {
-        sessionKey: sentKey,
-        message: "/status",
-        idempotencyKey: "title-control",
-      });
+      await create(sentKey);
+      await send(sentKey, "/status", "title-control");
       await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0), { timeout: 20_000 });
       expect(entry(sentKey)?.displayName).toBeUndefined();
       expect(requests).toHaveLength(2);
-      await request("chat.send", {
-        sessionKey: sentKey,
-        message: task,
-        idempotencyKey: "title-task",
-      });
+      await send(sentKey, task, "title-task");
       await waitForTitle(sentKey);
 
       const manualKey = "agent:main:dashboard:manual-title-source";
-      await request("sessions.create", {
-        agentId: "main",
-        key: manualKey,
-        label: "My chosen name",
-        titleSource: task,
-      });
+      await create(manualKey, { label: "My chosen name", titleSource: task });
       await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0), { timeout: 20_000 });
       expect(entry(manualKey)?.label).toBe("My chosen name");
       expect(requests).toHaveLength(3);
       const attachmentKey = "agent:main:dashboard:attachment-title-source";
-      await request("sessions.create", { agentId: "main", key: attachmentKey });
+      await create(attachmentKey);
       await request("chat.send", {
         sessionKey: attachmentKey,
         message: "/status",

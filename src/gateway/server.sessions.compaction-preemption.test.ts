@@ -98,23 +98,18 @@ test.each([true, false])(
 
     try {
       const compacted = await directSessionReq("sessions.compact", { key: "main" });
-
-      if (!abortable) {
+      expect(interrupted).toBe(abortable);
+      if (abortable) {
+        expect(compacted.ok).toBe(true);
+        await activeRun;
+      } else {
         expect(compacted).toMatchObject({
           ok: false,
           error: { code: "INVALID_REQUEST", message: expect.stringContaining("has an active run") },
         });
-        expect(interrupted).toBe(false);
-        expect(isSessionControllerWorkActive(storePath, [sessionId])).toBe(true);
-        expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
-        expectNoSessionQueueCleanup();
-        return;
       }
-      expect(compacted.ok).toBe(true);
-      expect(interrupted).toBe(true);
-      await activeRun;
-      expect(isSessionControllerWorkActive(storePath, [sessionId])).toBe(false);
-      expect(embeddedRunMock.compactEmbeddedAgentSession).toHaveBeenCalledOnce();
+      expect(isSessionControllerWorkActive(storePath, [sessionId])).toBe(!abortable);
+      expect(embeddedRunMock.compactEmbeddedAgentSession).toHaveBeenCalledTimes(Number(abortable));
       expectNoSessionQueueCleanup();
     } finally {
       stopped.resolve();
